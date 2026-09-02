@@ -1,0 +1,81 @@
+{
+  "fill" : {
+    "automatic-gradient" : "srgb:0.04314,0.40000,0.37255,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "blend-mode" : "normal",
+          "fill" : "automatic",
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "Down-Arrow.svg",
+          "name" : "Down Arrow",
+          "opacity" : 0.15,
+          "position" : {
+            "scale" : 0.54,
+            "translation-in-points" : [
+              132,
+              139
+            ]
+          }
+        }
+      ],
+      "name" : "Export",
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 0.35
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "hidden" : false,
+          "image-name" : "Front-Page.svg",
+          "name" : "Front Page"
+        },
+        {
+          "hidden" : false,
+          "image-name" : "Back-Page.svg",
+          "name" : "Back Page"
+        }
+      ],
+      "name" : "Documents",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    },
+    {
+      "layers" : [
+        {
+          "image-name" : "Background.svg",
+          "name" : "Background"
+        }
+      ],
+      "name" : "Background",
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

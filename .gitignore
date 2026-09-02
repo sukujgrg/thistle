@@ -1,0 +1,40 @@
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved.bak
+
+# Makefile app bundle and leftover binaries
+/bin/
+/build/
+
+# Xcode
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# Local convert output
+/*.pdf
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Editors
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
