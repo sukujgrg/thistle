@@ -1,6 +1,6 @@
 # thistle
 
-A Mac app that talks to Gotenberg. It can boot the full Gotenberg image on Apple silicon without Docker, or send requests to a Gotenberg API you already run.
+A Mac app that talks to [Gotenberg](https://gotenberg.dev). It can boot the full Gotenberg image on Apple silicon without Docker, or send requests to a Gotenberg API you already run.
 
 The window is a client. A per-user LaunchAgent owns the VM. Launch does not boot the guest. **Start Engine** (or the first convert) registers the agent, pulls `linux/arm64` if needed, boots the container, and waits for `/health`. Quitting the window leaves the engine running. **Stop Engine** tears the VM down. After 15 minutes idle the agent stops the guest and deletes the writable layer.
 
@@ -48,3 +48,7 @@ JSON routes (read metadata, read bookmarks) show the result in the window. Binar
 - No App Store sandbox. Developer ID plus the virtualization entitlement on the helper is enough to distribute.
 - The guest cannot bind port 0. The VM IPv4 is the ephemeral part.
 - A previous LibreOffice-only rootfs in Application Support is unused. The full image unpacks to its own cache file.
+
+## License
+
+[MIT](LICENSE)
