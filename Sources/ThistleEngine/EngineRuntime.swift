@@ -20,9 +20,22 @@
     private var logs: [EngineLogEntry] = []
     private var idleTask: Task<Void, Never>?
     private var watchdogTask: Task<Void, Never>?
+    // Lives for the helper process, not the guest. stop() cancels the
+    // watchdog, but a failed boot still has to cap engine.log.
+    private var rotateTask: Task<Void, Never>?
     private var recoverCount = 0
     private var generationDigest: String?
     private let client = GotenbergClient()
+
+    init() {
+      rotateTask = Task {
+        while !Task.isCancelled {
+          try? await Task.sleep(for: EngineIdentity.watchdog)
+          guard !Task.isCancelled else { return }
+          EngineLogFile.rotateIfNeeded()
+        }
+      }
+    }
 
     func status() -> EngineStatusDTO {
       EngineStatusDTO(
@@ -235,7 +248,6 @@
         while !Task.isCancelled {
           try? await Task.sleep(for: EngineIdentity.watchdog)
           guard !Task.isCancelled else { return }
-          EngineLogFile.rotateIfNeeded()
           await self.checkHealth()
         }
       }

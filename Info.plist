@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>By Suku</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Thistle talks to a Gotenberg API on this Mac or on your network.</string>
 	<key>NSAppTransportSecurity</key>

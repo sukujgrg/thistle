@@ -4,6 +4,21 @@ import Testing
 @testable import ThistleSupport
 
 struct OutputFileTests {
+  @Test func suggestedExtensionUsesMIMEThenMagic() {
+    let webp = Data([
+      0x52, 0x49, 0x46, 0x46, 0x1A, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+    ])
+    let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0])
+    let zip = Data([0x50, 0x4B, 0x03, 0x04])
+    #expect(OutputFile.suggestedExtension(mime: "image/webp", data: Data()) == "webp")
+    #expect(OutputFile.suggestedExtension(mime: "application/octet-stream", data: webp) == "webp")
+    #expect(OutputFile.suggestedExtension(mime: "application/octet-stream", data: png) == "png")
+    #expect(OutputFile.suggestedExtension(mime: "application/octet-stream", data: jpeg) == "jpg")
+    #expect(OutputFile.suggestedExtension(mime: "application/octet-stream", data: zip) == "zip")
+    #expect(OutputFile.suggestedExtension(mime: "application/pdf", data: Data()) == "pdf")
+  }
+
   @Test func filenameAddsExtensionOnce() {
     #expect(OutputFile.filename(basename: "report", ext: "pdf") == "report.pdf")
     #expect(OutputFile.filename(basename: "report.PDF", ext: "pdf") == "report.PDF")

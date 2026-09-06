@@ -40,7 +40,7 @@ Pick an action in the sidebar, then run it in the same window:
 - **LibreOffice:** Office documents to PDF.
 - **PDF engines:** merge, split, flatten, optimize, PDF/A, encrypt, rotate, watermark, stamp, metadata, bookmarks, embed, Factur-X.
 
-JSON routes (read metadata, read bookmarks) show the result in the window. Binary routes keep the converted file and show a preview with **Open**, **Show in Finder**, and **Save As**. Save As starts in the source file's folder when there is one, otherwise the last folder you used.
+JSON routes (read metadata, read bookmarks) show the result in the window. Binary routes keep the converted file and show an in-window preview. **Quick Look** opens a larger preview. **Show in Finder** and **Save As** stay available. After a successful run the form is hidden; **New** brings it back with the same files and options. Save As starts in the source file's folder when there is one, otherwise the last folder you used.
 
 ## Notes
 

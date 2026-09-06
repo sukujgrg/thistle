@@ -124,7 +124,7 @@ public actor GotenbergClient {
     }
 
     let mime = http.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
-    let ext = extensionForMIME(mime, data: data)
+    let ext = OutputFile.suggestedExtension(mime: mime, data: data)
     trace?.add("  -> HTTP \(http.statusCode) \(mime) \(data.count) bytes")
     return Response(
       data: data,
@@ -192,23 +192,9 @@ public actor GotenbergClient {
     }.reduce(into: "") { $0.append($1) }
   }
 
-  private func extensionForMIME(_ mime: String, data: Data) -> String {
-    let type =
-      mime.split(separator: ";").first.map(String.init)?.lowercased() ?? mime.lowercased()
-    if type.contains("pdf") { return "pdf" }
-    if type.contains("zip") { return "zip" }
-    if type.contains("json") { return "json" }
-    if type.contains("png") { return "png" }
-    if type.contains("jpeg") || type.contains("jpg") { return "jpg" }
-    if type.contains("webp") { return "webp" }
-    if looksLikeJSON(data) { return "json" }
-    if data.starts(with: [0x25, 0x50, 0x44, 0x46]) { return "pdf" }
-    return "bin"
-  }
-
   private func prettyJSON(data: Data, mime: String) -> String? {
     let type = mime.lowercased()
-    guard type.contains("json") || looksLikeJSON(data) else { return nil }
+    guard type.contains("json") || OutputFile.isJSON(data) else { return nil }
     guard let object = try? JSONSerialization.jsonObject(with: data) else {
       return String(data: data, encoding: .utf8)
     }
@@ -236,14 +222,6 @@ public actor GotenbergClient {
       return (true, "")
     }
     return (false, "HTTP \(http.statusCode)")
-  }
-
-  private func looksLikeJSON(_ data: Data) -> Bool {
-    guard let first = data.first(where: { $0 != 0x20 && $0 != 0x09 && $0 != 0x0A && $0 != 0x0D })
-    else {
-      return false
-    }
-    return first == 0x7B || first == 0x5B
   }
 }
 

@@ -12,7 +12,7 @@
           "hidden" : false,
           "image-name" : "Down-Arrow.svg",
           "name" : "Down Arrow",
-          "opacity" : 0.15,
+          "opacity" : 1,
           "position" : {
             "scale" : 0.54,
             "translation-in-points" : [

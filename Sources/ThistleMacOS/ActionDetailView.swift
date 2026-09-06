@@ -2,6 +2,7 @@
 
   import AppKit
   import PDFKit
+  import QuickLook
   import SwiftUI
 
   import ThistleSupport
@@ -14,6 +15,7 @@
     @State private var importingSlot: FileSlot?
     @State private var filePicker: FileSlotPicker?
     @State private var importError: String?
+    @State private var editingAfterResult = false
 
     init(action: ConvertAction) {
       self.action = action
@@ -25,12 +27,16 @@
         ScrollView {
           VStack(alignment: .leading, spacing: 20) {
             header
-            inputSection
-            extraFilesSection
-            optionsSection
-            runSection
-            resultSection
-              .id("result")
+            if showsComposer {
+              inputSection
+              extraFilesSection
+              optionsSection
+              runSection
+                .id("result")
+            } else {
+              resultSection
+                .id("result")
+            }
           }
           .padding(28)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -39,7 +45,7 @@
         .onChange(of: showsResult) { _, shown in
           guard shown else { return }
           withAnimation(.snappy(duration: 0.22)) {
-            proxy.scrollTo("result", anchor: .center)
+            proxy.scrollTo("result", anchor: .top)
           }
         }
       }
@@ -47,11 +53,39 @@
         form = ActionForm(action: action)
         expandedSections = []
         importError = nil
+        editingAfterResult = false
+      }
+      .onChange(of: controller.jobStatus) { _, status in
+        if case .succeeded = status, controller.resultActionID == action.id {
+          editingAfterResult = false
+        }
+      }
+      .onChange(of: controller.jsonPreview) { _, preview in
+        if preview != nil, controller.resultActionID == action.id {
+          editingAfterResult = false
+        }
       }
     }
 
+    private var isCurrentResult: Bool {
+      controller.resultActionID == action.id
+    }
+
+    private var hasCompletedResult: Bool {
+      guard isCurrentResult else { return false }
+      if case .succeeded = controller.jobStatus { return true }
+      return controller.jsonPreview != nil
+    }
+
+    private var showsComposer: Bool {
+      if controller.isWorking { return true }
+      if case .failed = controller.jobStatus, isCurrentResult { return true }
+      if hasCompletedResult { return editingAfterResult }
+      return true
+    }
+
     private var showsResult: Bool {
-      guard controller.resultActionID == action.id else { return false }
+      guard isCurrentResult else { return false }
       if case .succeeded = controller.jobStatus { return true }
       if case .failed = controller.jobStatus { return true }
       return controller.jsonPreview != nil
@@ -541,6 +575,12 @@
           Spacer()
         }
 
+        if case .failed(let message) = controller.jobStatus, isCurrentResult {
+          Text(message)
+            .font(.callout)
+            .foregroundStyle(.red)
+            .textSelection(.enabled)
+        }
         if let importError {
           Text(importError)
             .font(.callout)
@@ -569,28 +609,22 @@
 
     @ViewBuilder
     private var resultSection: some View {
-      if case .succeeded(let path) = controller.jobStatus, controller.resultActionID == action.id {
+      if case .succeeded(let path) = controller.jobStatus, isCurrentResult {
         ResultCard(path: path, saved: controller.resultSaved) {
-          controller.openResult()
-        } reveal: {
           controller.revealResult()
         } save: {
           Task { await controller.saveResult() }
+        } startNew: {
+          editingAfterResult = true
         }
       }
-      if let message = controller.saveError, controller.resultActionID == action.id {
+      if let message = controller.saveError, isCurrentResult {
         Text(message)
           .font(.callout)
           .foregroundStyle(.red)
           .textSelection(.enabled)
       }
-      if case .failed(let message) = controller.jobStatus, controller.resultActionID == action.id {
-        Text(message)
-          .font(.callout)
-          .foregroundStyle(.red)
-          .textSelection(.enabled)
-      }
-      if let json = controller.jsonPreview, controller.resultActionID == action.id {
+      if let json = controller.jsonPreview, isCurrentResult {
         VStack(alignment: .leading, spacing: 8) {
           HStack {
             Text("JSON")
@@ -600,6 +634,9 @@
               Task { await controller.saveJSONPreview(defaultName: action.defaultFilename) }
             }
             .buttonStyle(.borderless)
+            Button("New") {
+              editingAfterResult = true
+            }
           }
           JSONTextEditor(text: .constant(json), isEditable: false)
             .frame(minHeight: 180)
@@ -665,9 +702,11 @@
   private struct ResultCard: View {
     let path: String
     let saved: Bool
-    var open: () -> Void
     var reveal: () -> Void
     var save: () -> Void
+    var startNew: () -> Void
+
+    @State private var quickLookURL: URL?
 
     private var url: URL { URL(fileURLWithPath: path) }
 
@@ -695,20 +734,19 @@
           Spacer(minLength: 8)
           HStack(spacing: 8) {
             if saved {
-              Button("Open", action: open)
+              quickLookButton
               Button("Show in Finder", action: reveal)
-                .buttonStyle(.borderless)
               Button("Save a Copy…", action: save)
             } else {
               Button("Save As…", action: save)
                 .buttonStyle(.borderedProminent)
-              Button("Open", action: open)
+              quickLookButton
               Button("Show in Finder", action: reveal)
-                .buttonStyle(.borderless)
             }
+            Button("New", action: startNew)
           }
         }
-        ResultPreview(url: url)
+        ResultPreview(url: url, onQuickLook: showQuickLook)
       }
       .padding(14)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -717,54 +755,115 @@
         RoundedRectangle(cornerRadius: 10)
           .strokeBorder(.separator.opacity(0.6))
       )
+      .quickLookPreview($quickLookURL)
+    }
+
+    private var quickLookButton: some View {
+      Button("Quick Look", action: showQuickLook)
+    }
+
+    private func showQuickLook() {
+      quickLookURL = url
     }
   }
 
   private struct ResultPreview: View {
     let url: URL
+    var onQuickLook: () -> Void
+
+    var body: some View {
+      switch url.pathExtension.lowercased() {
+      case "pdf":
+        PDFResultView(url: url)
+          .frame(height: 460)
+          .frame(maxWidth: .infinity)
+          .previewChrome()
+      case "png", "jpg", "jpeg":
+        ImageResultView(url: url, onQuickLook: onQuickLook)
+      default:
+        EmptyView()
+      }
+    }
+  }
+
+  private struct PDFResultView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> PDFView {
+      let view = PDFView()
+      view.autoScales = true
+      view.displayMode = .singlePageContinuous
+      view.displayDirection = .vertical
+      view.displaysPageBreaks = true
+      view.backgroundColor = .white
+      view.document = Self.readOnlyDocument(at: url)
+      return view
+    }
+
+    func updateNSView(_ view: PDFView, context: Context) {
+      if view.document?.documentURL != url {
+        view.document = Self.readOnlyDocument(at: url)
+      }
+    }
+
+    private static func readOnlyDocument(at url: URL) -> PDFDocument? {
+      guard let document = PDFDocument(url: url) else { return nil }
+      for pageIndex in 0..<document.pageCount {
+        guard let page = document.page(at: pageIndex) else { continue }
+        for annotation in page.annotations where isWidget(annotation) {
+          annotation.isReadOnly = true
+        }
+      }
+      return document
+    }
+
+    private static func isWidget(_ annotation: PDFAnnotation) -> Bool {
+      let type = annotation.type?.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+      return type?.caseInsensitiveCompare("Widget") == .orderedSame
+    }
+  }
+
+  private struct ImageResultView: View {
+    let url: URL
+    var onQuickLook: () -> Void
     @State private var image: NSImage?
 
     var body: some View {
       Group {
         if let image {
-          Button {
-            NSWorkspace.shared.open(url)
-          } label: {
+          Button(action: onQuickLook) {
             Image(nsImage: image)
               .resizable()
               .scaledToFit()
-              .frame(maxHeight: 420)
+              .frame(maxHeight: 460)
               .frame(maxWidth: .infinity)
               .background(Color.white)
-              .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-              .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                  .strokeBorder(.separator.opacity(0.6))
-              )
           }
           .buttonStyle(.plain)
-          .help("Open")
+          .help("Quick Look")
+          .previewChrome()
         }
       }
       .task(id: url) {
-        image = Self.thumbnail(for: url)
+        image = NSImage(contentsOf: url)
       }
     }
+  }
 
-    private static func thumbnail(for url: URL) -> NSImage? {
-      switch url.pathExtension.lowercased() {
-      case "pdf":
-        guard let page = PDFDocument(url: url)?.page(at: 0) else { return nil }
-        let bounds = page.bounds(for: .mediaBox)
-        let maxWidth: CGFloat = 720
-        let scale = min(2, maxWidth / max(bounds.width, 1))
-        let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-        return page.thumbnail(of: size, for: .mediaBox)
-      case "png", "jpg", "jpeg", "webp":
-        return NSImage(contentsOf: url)
-      default:
-        return nil
-      }
+  private struct PreviewChrome: ViewModifier {
+    func body(content: Content) -> some View {
+      content
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(.separator.opacity(0.6))
+        )
+    }
+  }
+
+  extension View {
+    fileprivate func previewChrome() -> some View {
+      modifier(PreviewChrome())
     }
   }
 

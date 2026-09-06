@@ -389,11 +389,6 @@
       }
     }
 
-    func openResult() {
-      guard case .succeeded(let path) = jobStatus else { return }
-      NSWorkspace.shared.open(URL(fileURLWithPath: path))
-    }
-
     func revealResult() {
       guard case .succeeded(let path) = jobStatus else { return }
       NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
