@@ -12,6 +12,10 @@ One GUI instance. One CPU guest. A second launch brings the existing window forw
 - macOS 26
 - Xcode 26 / Swift 6.2
 
+## Install
+
+Download the zip from [latest](https://github.com/sukujgrg/thistle/releases/latest). Unzip it and copy `Thistle.app` to `/Applications` or `~/Applications`.
+
 ## Build and run
 
 ```bash
