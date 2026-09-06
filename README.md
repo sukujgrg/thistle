@@ -2,6 +2,8 @@
 
 A Mac app that talks to [Gotenberg](https://gotenberg.dev). It can boot the full Gotenberg image on Apple silicon in a built-in VM, or send requests to a Gotenberg API you already run.
 
+![Thistle converting an Office document to PDF](images/thistle1.png)
+
 The window is a client. A per-user LaunchAgent owns the VM. Launch does not boot the guest. **Start Engine** (or the first convert) registers the agent, pulls `linux/arm64` if needed, boots the container, and waits for `/health`. Quitting the window leaves the engine running. **Stop Engine** tears the VM down. After 15 minutes idle the agent stops the guest and deletes the writable layer.
 
 One GUI instance. One CPU guest. A second launch brings the existing window forward.
@@ -29,6 +31,8 @@ Notarized GitHub binaries follow the eucaly release flow. See `MAINTAINERS.md`. 
 ## First start
 
 The first **Start Engine** downloads a Kata arm64 kernel, Apple's `vminit`, and `gotenberg/gotenberg:8` (Chromium, LibreOffice, and PDF engines). Later starts reuse `~/Library/Application Support/thistle/`. Chromium and LibreOffice auto-start so the first conversion is not a cold launch.
+
+![Built-in VM engine status, guest URL, and log](images/thistle2.png)
 
 The VM uses 1 CPU and 2 GiB of memory. The guest still listens on port 3000. The host address is the vmnet IPv4. Copy it from the toolbar if another client should call the same engine.
 
