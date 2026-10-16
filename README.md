@@ -26,7 +26,7 @@ make run
 
 That builds `bin/Thistle.app` with `ThistleEngine` inside, signs the helper with `com.apple.security.virtualization`, and opens the GUI. Enable **Thistle Engine** in System Settings > General > Login Items if macOS asks.
 
-Notarized GitHub binaries follow the eucaly release flow. See `MAINTAINERS.md`. The app checks GitHub for a newer notarized zip and can replace itself from **Thistle > Check for Updates...**.
+`make build` installs a release configuration app into `~/Applications`. For distribution, update `VERSION`, commit and push to `main`, then run `make release`. The ViewTheWord/eucaly release flow validates CI, signs, notarizes, tags, and publishes automatically. See [MAINTAINERS.md](MAINTAINERS.md) for setup and recovery. The app checks GitHub for a newer notarized zip and can replace itself from **Thistle > Check for Updates...**.
 
 ## First start
 

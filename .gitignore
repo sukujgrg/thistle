@@ -1,6 +1,7 @@
 # SwiftPM
 .build/
 .swiftpm/
+__pycache__/
 Package.resolved.bak
 
 # Makefile app bundle and leftover binaries
