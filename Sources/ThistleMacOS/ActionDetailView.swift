@@ -30,6 +30,9 @@
             if showsComposer {
               inputSection
               extraFilesSection
+              if let prefix = action.markPrefix {
+                PDFMarkEditor(prefix: prefix, marks: $form.marks, enabled: !controller.isWorking)
+              }
               optionsSection
               runSection
                 .id("result")
@@ -290,7 +293,7 @@
 
     private func presetRow(label: String, fields: [FormField], group: PresetGroup) -> some View {
       let isCustom = form.selectedPreset(group) == FieldPreset.customID
-      let help = fields.first?.help ?? ""
+      let help = fields.first.map(fieldHelp) ?? ""
       let showsCaption = isCustom && (fields.first?.showsCaption ?? false)
       return GridRow(alignment: .top) {
         optionLabel(label, help: help)
@@ -460,8 +463,8 @@
       switch field.kind {
       case .text:
         GridRow {
-          optionLabel(field.label, help: field.help)
-          controlColumn(help: field.help, showsCaption: field.showsCaption) {
+          optionLabel(field.label, help: fieldHelp(field))
+          controlColumn(help: fieldHelp(field), showsCaption: field.showsCaption) {
             TextField("", text: $form.value(for: field), prompt: Text(field.placeholder))
               .labelsHidden()
               .textFieldStyle(.roundedBorder)
@@ -469,8 +472,8 @@
         }
       case .secure:
         GridRow {
-          optionLabel(field.label, help: field.help)
-          controlColumn(help: field.help, showsCaption: field.showsCaption) {
+          optionLabel(field.label, help: fieldHelp(field))
+          controlColumn(help: fieldHelp(field), showsCaption: field.showsCaption) {
             SecureField("", text: $form.value(for: field), prompt: Text(field.placeholder))
               .labelsHidden()
               .textFieldStyle(.roundedBorder)
@@ -478,8 +481,8 @@
         }
       case .toggle:
         GridRow {
-          optionLabel(field.label, help: field.help)
-          controlColumn(help: field.help, showsCaption: field.showsCaption) {
+          optionLabel(field.label, help: fieldHelp(field))
+          controlColumn(help: fieldHelp(field), showsCaption: field.showsCaption) {
             Toggle("", isOn: $form.toggle(for: field))
               .labelsHidden()
               .toggleStyle(.checkbox)
@@ -488,8 +491,8 @@
         }
       case .picker(let options):
         GridRow {
-          optionLabel(field.label, help: field.help)
-          controlColumn(help: field.help, showsCaption: field.showsCaption) {
+          optionLabel(field.label, help: fieldHelp(field))
+          controlColumn(help: fieldHelp(field), showsCaption: field.showsCaption) {
             Picker("", selection: $form.value(for: field)) {
               ForEach(options, id: \.self) { option in
                 Text(pickerOptionTitle(option, field: field)).tag(option)
@@ -502,8 +505,8 @@
         }
       case .multiline:
         GridRow(alignment: .top) {
-          optionLabel(field.label, help: field.help)
-          controlColumn(help: field.help, showsCaption: field.showsCaption) {
+          optionLabel(field.label, help: fieldHelp(field))
+          controlColumn(help: fieldHelp(field), showsCaption: field.showsCaption) {
             ZStack(alignment: .topLeading) {
               JSONTextEditor(text: $form.value(for: field))
                 .frame(minHeight: 88)
@@ -521,6 +524,13 @@
           }
         }
       }
+    }
+
+    private func fieldHelp(_ field: FormField) -> String {
+      guard let minimum = GotenbergCompatibility.minimumVersion(forField: field.key) else {
+        return field.help
+      }
+      return field.help + " Requires Gotenberg \(minimum) or later."
     }
 
     private func pickerOptionTitle(_ option: String, field: FormField) -> String {
@@ -585,8 +595,12 @@
           Text(importError)
             .font(.callout)
             .foregroundStyle(.red)
+        } else if let compatibilityIssue {
+          Text(compatibilityIssue)
+            .font(.callout)
+            .foregroundStyle(.orange)
         } else if controller.hasUnappliedRemoteURL {
-          Text("Connect to apply the edited URL before running this action.")
+          Text("Connect to apply the edited URL or authentication before running this action.")
             .font(.callout)
             .foregroundStyle(.secondary)
         } else if controller.usesRemote && !controller.isRunning {
@@ -648,6 +662,11 @@
 
     private var canRun: Bool {
       !controller.isWorking && controller.canSubmitJobs && form.canSubmit(action)
+        && compatibilityIssue == nil
+    }
+
+    private var compatibilityIssue: String? {
+      controller.compatibilityIssue(action: action, fields: form.fieldsToSend(action))
     }
 
     private func run() async {

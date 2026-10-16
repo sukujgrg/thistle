@@ -53,40 +53,84 @@ public actor GotenbergClient {
     "cookies", "extraHttpHeaders", "password", "userPassword", "ownerPassword",
   ]
 
-  private let session: URLSession
+  private let dataLoader: @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
   public init() {
     let config = URLSessionConfiguration.ephemeral
     config.timeoutIntervalForRequest = 300
     config.timeoutIntervalForResource = 600
+    config.urlCredentialStorage = nil
+    config.httpCookieStorage = nil
+    config.httpShouldSetCookies = false
     let queue = OperationQueue()
     queue.name = "gotenberg.http"
     queue.maxConcurrentOperationCount = 1
-    session = URLSession(configuration: config, delegate: nil, delegateQueue: queue)
+    let session = URLSession(
+      configuration: config, delegate: APIRedirectDelegate(), delegateQueue: queue)
+    dataLoader = { try await session.data(for: $0) }
+  }
+
+  init(dataLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)) {
+    self.dataLoader = dataLoader
+  }
+
+  public func checkHealth(baseURL: URL, credentials: RemoteCredentials = RemoteCredentials())
+    async throws
+  {
+    var request = Self.healthRequest(baseURL: baseURL)
+    request.setValue(try credentials.authorizationHeader(), forHTTPHeaderField: "Authorization")
+    let (data, response) = try await load(request)
+    try Self.checkResponse(response, data: data, credentials: credentials)
   }
 
   public func ping(baseURL: URL) async -> Bool {
     do {
-      let (_, response) = try await session.data(for: Self.healthRequest(baseURL: baseURL))
-      return Self.healthStatus(response).ok
+      try await checkHealth(baseURL: baseURL)
+      return true
     } catch {
       return false
     }
   }
 
+  public func version(baseURL: URL, credentials: RemoteCredentials = RemoteCredentials())
+    async throws -> String?
+  {
+    var request = URLRequest(url: baseURL.appending(path: "version"))
+    request.timeoutInterval = 3
+    request.setValue(try credentials.authorizationHeader(), forHTTPHeaderField: "Authorization")
+    let (data, response) = try await load(request)
+    if (response as? HTTPURLResponse)?.statusCode == 404 { return nil }
+    try Self.checkResponse(response, data: data, credentials: credentials)
+    guard data.count <= 256, let raw = String(data: data, encoding: .utf8) else { return nil }
+    let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty || value.contains(where: { $0.isWhitespace }) || value.contains("<")
+      ? nil : credentials.redacting(value)
+  }
+
   public static func waitUntilHealthy(baseURL: URL, timeout: Duration = .seconds(180)) async throws
   {
+    try await waitUntilHealthy(baseURL: baseURL, timeout: timeout) {
+      try await URLSession.shared.data(for: $0)
+    }
+  }
+
+  static func waitUntilHealthy(
+    baseURL: URL, timeout: Duration,
+    dataLoader: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+  ) async throws {
     let request = healthRequest(baseURL: baseURL)
     let deadline = ContinuousClock.now + timeout
     var lastError = "timed out"
     while ContinuousClock.now < deadline {
       do {
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await dataLoader(request)
         let status = healthStatus(response)
         if status.ok { return }
         lastError = status.detail
       } catch {
-        lastError = String(describing: error)
+        try Task.checkCancellation()
+        if NetworkFailure.isLocalNetworkDenied(error) { throw EngineError.localNetworkAccessDenied }
+        lastError = error.localizedDescription
       }
       try await Task.sleep(for: .milliseconds(500))
     }
@@ -96,8 +140,9 @@ public actor GotenbergClient {
   public func submit(
     baseURL: URL,
     path: String,
-    fields: [String: String],
+    fields: [MultipartField],
     files: [FileRefDTO],
+    credentials: RemoteCredentials = RemoteCredentials(),
     trace: HTTPTrace? = nil
   ) async throws -> Response {
     let boundary = "Boundary-\(UUID().uuidString)"
@@ -110,17 +155,19 @@ public actor GotenbergClient {
     request.setValue(
       "multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
     request.timeoutInterval = 300
-    request.httpBody = try multipartBody(boundary: boundary, fields: fields, files: files)
+    request.setValue(try credentials.authorizationHeader(), forHTTPHeaderField: "Authorization")
+    request.httpBody = try Self.multipartBody(boundary: boundary, fields: fields, files: files)
 
-    let (data, response) = try await session.data(for: request)
+    let (data, response) = try await load(request)
     guard let http = response as? HTTPURLResponse else {
       trace?.add("  -> no HTTP response")
       throw EngineError.convertFailed(status: -1, body: "no HTTP response")
     }
-    guard (200..<300).contains(http.statusCode) else {
-      let text = String(data: data, encoding: .utf8) ?? "<\(data.count) bytes>"
-      trace?.add("  -> HTTP \(http.statusCode) \(text)")
-      throw EngineError.convertFailed(status: http.statusCode, body: text)
+    do {
+      try Self.checkResponse(response, data: data, credentials: credentials)
+    } catch {
+      trace?.add("  -> \(EngineError.message(for: error))")
+      throw error
     }
 
     let mime = http.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
@@ -136,13 +183,14 @@ public actor GotenbergClient {
 
   private static func recordRequest(
     url: URL,
-    fields: [String: String],
+    fields: [MultipartField],
     files: [FileRefDTO],
     into trace: HTTPTrace?
   ) {
     guard let trace else { return }
     trace.add("POST \(url.absoluteString)")
-    for (name, value) in fields.sorted(by: { $0.key < $1.key }) {
+    for field in fields {
+      let (name, value) = (field.name, field.value)
       if secretFields.contains(name) {
         trace.add("  \(name)=<redacted>")
       } else {
@@ -155,13 +203,22 @@ public actor GotenbergClient {
     }
   }
 
-  private func multipartBody(
+  private func load(_ request: URLRequest) async throws -> (Data, URLResponse) {
+    do {
+      return try await dataLoader(request)
+    } catch {
+      throw NetworkFailure.normalized(error)
+    }
+  }
+
+  static func multipartBody(
     boundary: String,
-    fields: [String: String],
+    fields: [MultipartField],
     files: [FileRefDTO]
   ) throws -> Data {
     var body = Data()
-    for (name, value) in fields.sorted(by: { $0.key < $1.key }) {
+    for field in fields {
+      let (name, value) = (field.name, field.value)
       body.append(ascii: "--\(boundary)\r\n")
       body.append(ascii: "Content-Disposition: form-data; name=\"\(headerValue(name))\"\r\n\r\n")
       body.append(ascii: value)
@@ -183,7 +240,7 @@ public actor GotenbergClient {
     return body
   }
 
-  private func headerValue(_ value: String) -> String {
+  private static func headerValue(_ value: String) -> String {
     value.map { character in
       switch character {
       case "\"", "\\", "\r", "\n": "_"
@@ -222,6 +279,58 @@ public actor GotenbergClient {
       return (true, "")
     }
     return (false, "HTTP \(http.statusCode)")
+  }
+
+  private static func checkResponse(
+    _ response: URLResponse, data: Data, credentials: RemoteCredentials
+  ) throws {
+    guard let http = response as? HTTPURLResponse else {
+      throw EngineError.convertFailed(status: -1, body: "no HTTP response")
+    }
+    guard (200..<300).contains(http.statusCode) else {
+      let message: String
+      if http.statusCode == 401 {
+        message =
+          "Authentication failed. Check the username/password or bearer token, then Connect again."
+      } else if http.statusCode == 403 {
+        message =
+          "Access denied by the Gotenberg server. Check your credentials and server permissions."
+      } else if (300..<400).contains(http.statusCode) {
+        message = "The API redirected to another server. Use its final URL and connect again."
+      } else {
+        message = credentials.redacting(
+          String(data: data, encoding: .utf8) ?? "<\(data.count) bytes>")
+      }
+      throw EngineError.convertFailed(status: http.statusCode, body: message)
+    }
+  }
+}
+
+/// API credentials and uploaded files must never follow a redirect to another origin.
+final class APIRedirectDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+  static func allows(from source: URL?, to destination: URL?) -> Bool {
+    guard let source, let destination else { return false }
+    func port(_ url: URL) -> Int { url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80) }
+    return source.scheme?.lowercased() == destination.scheme?.lowercased()
+      && source.host?.lowercased() == destination.host?.lowercased()
+      && port(source) == port(destination)
+      && destination.user == nil && destination.password == nil
+  }
+
+  func urlSession(
+    _ session: URLSession, task: URLSessionTask,
+    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+    completionHandler: @escaping @Sendable (URLRequest?) -> Void
+  ) {
+    guard Self.allows(from: task.originalRequest?.url, to: request.url) else {
+      completionHandler(nil)
+      return
+    }
+    var next = request
+    next.setValue(
+      task.originalRequest?.value(forHTTPHeaderField: "Authorization"),
+      forHTTPHeaderField: "Authorization")
+    completionHandler(next)
   }
 }
 

@@ -10,10 +10,16 @@
     var files: [URL] = []
     var extraFiles: [String: [URL]] = [:]
     var values: [String: String] = [:]
+    var marks: [PDFMark] = []
 
     init(action: ConvertAction) {
       for field in action.fields {
         values[field.key] = field.defaultValue
+      }
+      if let prefix = action.markPrefix {
+        var mark = PDFMark(text: prefix == "stamp" ? "APPROVED" : "CONFIDENTIAL")
+        mark.options = ##"{"scale":"1 abs","rot":"45","fillcolor":"#C00000","op":"0.35"}"##
+        marks = [mark]
       }
     }
 
@@ -93,10 +99,9 @@
           return false
         }
       }
-      if !markSourceIsValid(prefix: "watermark", fileField: "watermark") {
-        return false
-      }
-      if !markSourceIsValid(prefix: "stamp", fileField: "stamp") {
+      if action.markPrefix != nil,
+        marks.isEmpty || marks.contains(where: { $0.validationMessage != nil })
+      {
         return false
       }
       return true
@@ -129,64 +134,19 @@
     }
 
     func extraSlots(for action: ConvertAction) -> [FileSlot] {
-      action.extraFiles.compactMap { slot in
-        switch slot.field {
-        case "watermark", "stamp":
-          switch trimmed("\(slot.field)Source") {
-          case "image":
-            return slot.refined(
-              types: ConvertUTType.images,
-              extensions: ConvertUTType.imageExtensions,
-              help: "PNG, JPEG, or WebP.")
-          case "pdf":
-            return slot.refined(
-              types: ConvertUTType.pdf,
-              extensions: ConvertUTType.pdfExtensions,
-              help: "One PDF used as the mark.")
-          default:
-            return nil
-          }
-        default:
-          return slot
-        }
-      }
+      action.extraFiles
     }
 
     private func hasExtra(_ field: String) -> Bool {
       !(extraFiles[field] ?? []).isEmpty
     }
 
-    private func markGroupActive(prefix: String, fileField: String) -> Bool {
-      if !trimmed("\(prefix)Expression").isEmpty {
-        return true
-      }
-      if hasExtra(fileField) {
-        return true
-      }
-      let source = trimmed("\(prefix)Source")
-      return source == "text" || source == "image" || source == "pdf"
-    }
-
-    private func markSourceIsValid(prefix: String, fileField: String) -> Bool {
-      if !markGroupActive(prefix: prefix, fileField: fileField) {
-        return true
-      }
-      let source = trimmed("\(prefix)Source")
-      if source == "image" || source == "pdf" {
-        return hasExtra(fileField)
-      }
-      return !trimmed("\(prefix)Expression").isEmpty
-    }
-
-    func fieldsToSend(_ action: ConvertAction) -> [String: String] {
-      var out: [String: String] = [:]
+    func fieldsToSend(_ action: ConvertAction) -> [MultipartField] {
+      var out: [MultipartField] = []
       if action.urlField {
-        out["url"] = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        out.append(MultipartField("url", url.trimmingCharacters(in: .whitespacesAndNewlines)))
       }
       for field in action.fields {
-        if shouldSkipMarkField(field) {
-          continue
-        }
         if shouldSkipSplitField(field) {
           continue
         }
@@ -211,17 +171,20 @@
         }
         switch field.kind {
         case .toggle:
-          out[field.key] = value
+          out.append(MultipartField(field.key, value))
         case .picker:
           if !value.isEmpty {
-            out[field.key] = value
+            out.append(MultipartField(field.key, value))
           }
         case .text, .secure, .multiline:
           let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
           if !trimmed.isEmpty {
-            out[field.key] = trimmed
+            out.append(MultipartField(field.key, trimmed))
           }
         }
+      }
+      if let prefix = action.markPrefix {
+        out += marks.flatMap { $0.fields(prefix: prefix) }
       }
       return out
     }
@@ -234,11 +197,13 @@
         }
       }
       for slot in action.extraFiles {
-        if shouldSkipMarkFile(slot) {
-          continue
-        }
         for file in extraFiles[slot.field] ?? [] {
           pairs.append((field: slot.field, url: file))
+        }
+      }
+      if let prefix = action.markPrefix {
+        for mark in marks where mark.source != .text {
+          for file in mark.files { pairs.append((field: prefix, url: file)) }
         }
       }
       return pairs
@@ -368,47 +333,6 @@
       return trimmed("rotateAngle").isEmpty
     }
 
-    private func shouldSkipMarkField(_ field: FormField) -> Bool {
-      if field.key.hasPrefix("watermark") {
-        if !markGroupActive(prefix: "watermark", fileField: "watermark") {
-          return true
-        }
-        if field.key == "watermarkExpression" {
-          return trimmed("watermarkSource") == "image" || trimmed("watermarkSource") == "pdf"
-        }
-      }
-      if field.key.hasPrefix("stamp") {
-        if !markGroupActive(prefix: "stamp", fileField: "stamp") {
-          return true
-        }
-        if field.key == "stampExpression" {
-          return trimmed("stampSource") == "image" || trimmed("stampSource") == "pdf"
-        }
-      }
-      return false
-    }
-
-    private func shouldSkipMarkFile(_ slot: FileSlot) -> Bool {
-      if slot.field == "watermark" {
-        if !markGroupActive(prefix: "watermark", fileField: "watermark") {
-          return true
-        }
-        return trimmed("watermarkSource") == "text"
-      }
-      if slot.field == "stamp" {
-        if !markGroupActive(prefix: "stamp", fileField: "stamp") {
-          return true
-        }
-        return trimmed("stampSource") == "text"
-      }
-      if slot.field == "facturxXml" {
-        return !hasExtra("facturxXml")
-          && trimmed("facturxConformanceLevel").isEmpty
-          && trimmed("facturxDocumentType").isEmpty
-          && trimmed("facturxVersion").isEmpty
-      }
-      return false
-    }
   }
 
   extension Binding where Value == ActionForm {

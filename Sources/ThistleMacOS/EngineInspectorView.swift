@@ -25,6 +25,7 @@
           }
           if controller.usesRemote {
             remoteURLField(text: $controller.remoteURLText)
+            authenticationFields
           }
           Text(
             controller.usesRemote
@@ -40,6 +41,8 @@
         } else {
           facts
         }
+
+        versionSection
 
         logSection
       }
@@ -103,6 +106,7 @@
           .textFieldStyle(.roundedBorder)
           .font(.system(.callout, design: .monospaced))
           .frame(maxWidth: .infinity)
+          .disabled(controller.isStarting || controller.isWorking)
           .onSubmit {
             Task { await controller.applyRemoteURL() }
           }
@@ -111,6 +115,73 @@
         }
         .buttonStyle(.borderless)
         .disabled(controller.isStarting || controller.isWorking)
+      }
+    }
+
+    private var authenticationFields: some View {
+      @Bindable var controller = controller
+      return VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 8) {
+          Picker(
+            "Authentication",
+            selection: Binding(
+              get: { controller.remoteCredentials.authentication },
+              set: { controller.remoteCredentials = RemoteCredentials(authentication: $0) }
+            )
+          ) {
+            ForEach(RemoteAuthentication.allCases) { kind in Text(kind.label).tag(kind) }
+          }
+          .frame(width: 220)
+          switch controller.remoteCredentials.authentication {
+          case .none: EmptyView()
+          case .basic:
+            TextField("Username", text: $controller.remoteCredentials.username)
+            SecureField("Password", text: $controller.remoteCredentials.secret)
+          case .bearer:
+            SecureField("Bearer token", text: $controller.remoteCredentials.secret)
+          }
+        }
+        .textFieldStyle(.roundedBorder)
+        Text("Connect applies authentication and saves credentials in Keychain for this API URL.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+      .disabled(controller.isStarting || controller.isWorking)
+    }
+
+    private var versionSection: some View {
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 12) {
+          fact(
+            "Version", controller.gotenbergVersion ?? (controller.isRunning ? "Unavailable" : "—"))
+          Button(controller.checkingEngineUpdate ? "Checking…" : "Check for engine updates") {
+            Task { await controller.checkEngineUpdate() }
+          }
+          .buttonStyle(.borderless)
+          .disabled(controller.checkingEngineUpdate)
+        }
+        if let release = controller.latestGotenbergRelease {
+          HStack(spacing: 12) {
+            Text(
+              controller.engineUpdateAvailable
+                ? "Gotenberg \(release.version) is available."
+                : "Latest stable release: \(release.version)."
+            )
+            .font(.caption).foregroundStyle(.secondary)
+            Link("Release notes", destination: release.url).font(.caption)
+            if controller.engineUpdateAvailable, controller.canManageVM {
+              Button("Refresh Image") { Task { await controller.refreshImage() } }
+                .buttonStyle(.borderless)
+                .disabled(controller.isStarting || controller.isWorking)
+            }
+          }
+        }
+        if let error = controller.engineUpdateError {
+          Text(error).font(.caption).foregroundStyle(.orange)
+        }
+        if controller.isRunning, controller.gotenbergVersion == nil {
+          Text("The server did not provide a version. Feature compatibility could not be checked.")
+            .font(.caption).foregroundStyle(.secondary)
+        }
       }
     }
 

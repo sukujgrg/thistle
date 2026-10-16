@@ -31,7 +31,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>By Suku</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Thistle talks to a Gotenberg API on this Mac or on your network.</string>
+	<string>Thistle connects to its built-in conversion engine and custom Gotenberg servers on your local network.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

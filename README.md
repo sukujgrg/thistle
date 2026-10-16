@@ -26,6 +26,10 @@ make run
 
 That builds `bin/Thistle.app` with `ThistleEngine` inside, signs the helper with `com.apple.security.virtualization`, and opens the GUI. Enable **Thistle Engine** in System Settings > General > Login Items if macOS asks.
 
+Local builds use an installed Developer ID Application or Apple Development signing identity when available, so macOS can retain Local Network permission across rebuilds. To choose a certificate, pass `SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)"`. Without a certificate the build falls back to ad-hoc signing, which may require granting permission again after a rebuild.
+
+The built-in VM is reached over a local network interface. Allow **Thistle** when macOS asks for Local Network access. If a start reports that local-network access is blocked, open System Settings > Privacy & Security > Local Network, enable Thistle, and start the engine again. The LaunchAgent is associated with Thistle so the permission belongs to the app.
+
 `make build` installs a release configuration app into `~/Applications`. For distribution, update `VERSION`, commit and push to `main`, then run `make release`. The ViewTheWord/eucaly release flow validates CI, signs, notarizes, tags, and publishes automatically. See [MAINTAINERS.md](MAINTAINERS.md) for setup and recovery. The app checks GitHub for a newer notarized zip and can replace itself from **Thistle > Check for Updates...**.
 
 ## First start
@@ -40,6 +44,10 @@ The **Start Engine** control is a split button. The menu has **Restart**, **Refr
 
 The inspector has a **Built-in VM** toggle. Off uses a custom Gotenberg URL (for example `http://127.0.0.1:3000`) and stops the guest if it is running. Connect the URL, then conversions go to that API. Turning **Built-in VM** on again returns to the local engine; **Start Engine** then boots the guest.
 
+The inspector shows the running Gotenberg version for both built-in and custom engines. **Check for engine updates** checks the latest stable upstream release and links its release notes. When an update is available for the built-in engine, **Refresh Image** downloads it. Actions explain when a selected feature requires a newer engine. Custom servers without a version endpoint remain usable, with compatibility shown as unknown.
+
+Custom servers support **None**, **Basic**, and **Bearer token** authentication. Enter a username and password or an existing bearer token, then **Connect** to apply and save it in macOS Keychain. Credentials are scoped to the API URL, kept out of settings and request logs, and used for health checks, version checks, and conversions. Editing the URL or authentication requires connecting again. Selecting **None** and connecting removes the saved credentials for that URL.
+
 ## Actions
 
 Pick an action in the sidebar, then run it in the same window:
@@ -49,6 +57,8 @@ Pick an action in the sidebar, then run it in the same window:
 - **PDF engines:** merge, split, flatten, optimize, PDF/A, encrypt, rotate, watermark, stamp, metadata, bookmarks, embed, Factur-X.
 
 JSON routes (read metadata, read bookmarks) show the result in the window. Binary routes keep the converted file and show an in-window preview. **Quick Look** opens a larger preview. **Show in Finder** and **Save As** stay available. After a successful run the form is hidden; **New** brings it back with the same files and options. Save As starts in the source file's folder when there is one, otherwise the last folder you used.
+
+**Stamp** and **Watermark** accept an ordered list of text, image, or PDF marks. Add, remove, or move marks up and down; each has its own page selection and options JSON. Image/PDF marks may reuse the same source file. Multiple marks require Gotenberg 8.36.0 or later; a single mark remains compatible with 8.28.0 and later.
 
 ## Notes
 

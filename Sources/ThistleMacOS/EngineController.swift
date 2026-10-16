@@ -35,22 +35,40 @@
     var imageDigest: String?
     var settings: EngineSettings
     var remoteURLText: String
+    var remoteCredentials = RemoteCredentials()
+    var gotenbergVersion: String?
+    var latestGotenbergRelease: GotenbergRelease?
+    var checkingEngineUpdate = false
+    var engineUpdateError: String?
     var inspectorPresented = false
     var confirmReset = false
     private static let lastSaveDirectoryKey = "lastSaveDirectory"
 
     private let client = EngineXPCClient()
     private let http = GotenbergClient()
+    private let releaseChecker = GotenbergReleaseChecker()
+    private var appliedRemoteCredentials = RemoteCredentials()
+    private var credentialURL: URL?
+    private var credentialLoadError: String?
+    private var remoteConnectionID = UUID()
     private var pollTask: Task<Void, Never>?
     private var remoteWasReachable: Bool?
     private var unsavedJobDirectory: URL?
     private var suggestedSaveDirectory: URL?
     private var lastSaveDirectory: URL?
 
-    init() {
-      let loaded = EngineSettings.load()
+    init(settings loaded: EngineSettings = .load()) {
       settings = loaded
       remoteURLText = loaded.remoteURL
+      if let url = try? EngineSettings.parseURL(loaded.remoteURL) {
+        credentialURL = url
+        do {
+          remoteCredentials = try RemoteCredentialStore.load(for: url)
+          appliedRemoteCredentials = remoteCredentials
+        } catch {
+          credentialLoadError = EngineError.message(for: error)
+        }
+      }
       if let path = UserDefaults.standard.string(forKey: Self.lastSaveDirectoryKey) {
         lastSaveDirectory = URL(fileURLWithPath: path)
       }
@@ -79,11 +97,17 @@
 
     var usesRemote: Bool { settings.usesRemote }
 
+    var needsLocalNetworkAccess: Bool {
+      guard case .failed(let message) = status else { return false }
+      return message.contains(EngineError.localNetworkAccessDenied.description)
+    }
+
     var canManageVM: Bool { !usesRemote }
 
     var hasUnappliedRemoteURL: Bool {
       guard usesRemote else { return false }
       return remoteURLText.trimmingCharacters(in: .whitespacesAndNewlines) != settings.remoteURL
+        || remoteCredentials != appliedRemoteCredentials
     }
 
     var highlightsUnappliedRemoteURL: Bool {
@@ -126,9 +150,11 @@
         }
       }
       settings.mode = mode
+      remoteConnectionID = UUID()
       persistSettings()
       logs = []
       imageDigest = nil
+      gotenbergVersion = nil
       remoteWasReachable = nil
       if mode == .remote {
         status = .idle
@@ -146,9 +172,22 @@
       }
       do {
         let url = try EngineSettings.parseURL(remoteURLText)
+        // Changing only the URL must not carry saved credentials to a different API.
+        if url != credentialURL, remoteCredentials == appliedRemoteCredentials {
+          remoteCredentials = try RemoteCredentialStore.load(for: url)
+        }
+        _ = try remoteCredentials.authorizationHeader()
+        try RemoteCredentialStore.save(remoteCredentials, for: url)
+        var nextSettings = settings
+        nextSettings.remoteURL = url.absoluteString
+        try nextSettings.save()
+        settings = nextSettings
+        remoteConnectionID = UUID()
+        appliedRemoteCredentials = remoteCredentials
+        credentialURL = url
+        credentialLoadError = nil
         remoteURLText = url.absoluteString
-        settings.remoteURL = url.absoluteString
-        persistSettings()
+        gotenbergVersion = nil
         remoteWasReachable = nil
         status = .starting("Connecting")
         await refreshRemote(connecting: true)
@@ -251,7 +290,7 @@
     }
 
     func submit(
-      action: ConvertAction, fields: [String: String], files: [(field: String, url: URL)],
+      action: ConvertAction, fields: [MultipartField], files: [(field: String, url: URL)],
       suggestedName: String, saveDirectory: URL? = nil
     ) async {
       discardUnsavedResult()
@@ -264,6 +303,9 @@
       suggestedSaveDirectory = saveDirectory
       let jobID = UUID().uuidString
       do {
+        if let issue = compatibilityIssue(action: action, fields: fields) {
+          throw EngineError.operationFailed(issue)
+        }
         if usesRemote {
           guard canSubmitJobs else {
             throw EngineError.invalidEngineURL(
@@ -274,7 +316,8 @@
             suggestedName: suggestedName)
         } else {
           try client.connect()
-          let staged = try stageFiles(jobID: jobID, action: action, fields: fields, files: files)
+          let staged = try Self.stageFiles(
+            jobID: jobID, action: action, fields: fields, files: files)
           let result = try await client.submit(
             jobID: jobID, path: action.path, fields: fields, files: staged)
           await refreshStatus()
@@ -287,17 +330,18 @@
     }
 
     private func submitRemote(
-      jobID: String, action: ConvertAction, fields: [String: String],
+      jobID: String, action: ConvertAction, fields: [MultipartField],
       files: [(field: String, url: URL)],
       suggestedName: String
     ) async throws {
       let url = try EngineSettings.parseURL(settings.remoteURL)
-      let staged = try stageFiles(jobID: jobID, action: action, fields: fields, files: files)
+      let staged = try Self.stageFiles(jobID: jobID, action: action, fields: fields, files: files)
       let trace = HTTPTrace()
       let response: GotenbergClient.Response
       do {
         response = try await http.submit(
-          baseURL: url, path: action.path, fields: fields, files: staged, trace: trace)
+          baseURL: url, path: action.path, fields: fields, files: staged,
+          credentials: appliedRemoteCredentials, trace: trace)
       } catch {
         for line in trace.snapshot() {
           noteRemote(line)
@@ -420,6 +464,8 @@
     }
 
     private func refreshRemote(connecting: Bool) async {
+      if isStarting && !connecting { return }
+      let connectionID = remoteConnectionID
       guard let url = settings.apiURL else {
         if connecting {
           applyError(EngineError.invalidEngineURL(EngineSettings.urlHint))
@@ -428,21 +474,74 @@
         }
         return
       }
-      if await http.ping(baseURL: url) {
+      let credentials = appliedRemoteCredentials
+      do {
+        if let credentialLoadError { throw EngineError.operationFailed(credentialLoadError) }
+        try await http.checkHealth(baseURL: url, credentials: credentials)
+        // /health may be public while /version and conversions require authentication.
+        // Probe the version on connection/reconnection, not on every health poll.
+        let probeVersion = connecting || remoteWasReachable != true
+        var version = gotenbergVersion
+        if probeVersion {
+          do {
+            version = try await http.version(baseURL: url, credentials: credentials)
+          } catch let error as EngineError {
+            if case .convertFailed(let code, _) = error, code == 401 || code == 403 { throw error }
+            version = nil
+          } catch {
+            version = nil
+          }
+        }
+        guard remoteConnectionID == connectionID, settings.apiURL == url,
+          appliedRemoteCredentials == credentials, usesRemote
+        else { return }
+        gotenbergVersion = version
         status = .running(url.absoluteString)
         if remoteWasReachable != true {
           noteRemote("Connected to \(url.absoluteString)")
         }
         remoteWasReachable = true
         return
+      } catch {
+        guard remoteConnectionID == connectionID, settings.apiURL == url,
+          appliedRemoteCredentials == credentials, usesRemote
+        else { return }
+        let message = "Could not connect to Gotenberg: \(EngineError.message(for: error))"
+        status = .failed(message)
+        gotenbergVersion = nil
+        if remoteWasReachable != false || connecting { noteRemote(message) }
+        remoteWasReachable = false
       }
-      let message =
-        "Gotenberg did not respond at \(url.absoluteString). Check the URL and that the API is running."
-      status = .failed(message)
-      if remoteWasReachable != false || connecting {
-        noteRemote(message)
+    }
+
+    func compatibilityIssue(action: ConvertAction, fields: [MultipartField]) -> String? {
+      guard
+        let issue = GotenbergCompatibility.issue(
+          version: gotenbergVersion, path: action.path, fields: fields)
+      else { return nil }
+      return issue
+        + (usesRemote
+          ? " Update the custom server to use this feature."
+          : " Use Refresh Image to update the built-in engine.")
+    }
+
+    func checkEngineUpdate() async {
+      guard !checkingEngineUpdate else { return }
+      checkingEngineUpdate = true
+      engineUpdateError = nil
+      defer { checkingEngineUpdate = false }
+      do {
+        latestGotenbergRelease = try await releaseChecker.latest()
+      } catch {
+        engineUpdateError = EngineError.message(for: error)
       }
-      remoteWasReachable = false
+    }
+
+    var engineUpdateAvailable: Bool {
+      guard let gotenbergVersion, let current = AppVersionModel(gotenbergVersion),
+        let latestGotenbergRelease, let latest = AppVersionModel(latestGotenbergRelease.version)
+      else { return false }
+      return current < latest
     }
 
     private func noteRemote(_ message: String) {
@@ -472,6 +571,7 @@
     }
 
     private func apply(_ dto: EngineStatusDTO) {
+      gotenbergVersion = dto.gotenbergVersion
       if logs != dto.logs {
         logs = dto.logs
       }
@@ -498,8 +598,8 @@
       status = .failed(EngineError.message(for: error))
     }
 
-    private func stageFiles(
-      jobID: String, action: ConvertAction, fields: [String: String],
+    static func stageFiles(
+      jobID: String, action: ConvertAction, fields: [MultipartField],
       files: [(field: String, url: URL)]
     ) throws -> [FileRefDTO] {
       let root = Paths.jobDirectory(jobID)
@@ -507,7 +607,8 @@
       // Gotenberg alphanumeric-sorts the `files` field by original filename.
       // Prefix those jobs so picker order is merge order. Chromium, embeds,
       // and other name-sensitive routes need the literal original name.
-      let preservePickerOrder = action.id == "pdf-merge" || fields["merge"] == "true"
+      let preservePickerOrder =
+        action.id == "pdf-merge" || fields.firstValue(for: "merge") == "true"
       let orderWidth = max(1, String(max(0, files.count - 1)).count)
       var usedNames: Set<String> = []
       var refs: [FileRefDTO] = []
@@ -524,7 +625,13 @@
         }
         let original = pair.url.lastPathComponent
         let order = String(format: "%0\(orderWidth)d", index)
-        let filename = preservePickerOrder ? "\(order)-\(original)" : original
+        // Marks are consumed in upload order and may reuse the same source file.
+        // Give them unique names even on engines predating duplicate-name support.
+        let isMark = pair.field == "stamp" || pair.field == "watermark"
+        let filename =
+          isMark
+          ? "\(pair.field)-\(UUID().uuidString).\(pair.url.pathExtension)"
+          : (preservePickerOrder ? "\(order)-\(original)" : original)
         if !usedNames.insert(filename).inserted {
           throw EngineError.stagingFailed(
             "Two files are named '\(filename)'. Gotenberg looks files up by name; rename one of them."

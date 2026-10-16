@@ -54,6 +54,7 @@ public struct EngineStatusDTO: Codable, Sendable {
   public var initfs: String
   public var imageDigest: String?
   public var kernelVersion: String
+  public var gotenbergVersion: String?
 
   public init(
     protocolVersion: Int = EngineIdentity.protocolVersion,
@@ -65,7 +66,8 @@ public struct EngineStatusDTO: Codable, Sendable {
     image: String = EngineIdentity.image,
     initfs: String = EngineIdentity.initfs,
     imageDigest: String? = nil,
-    kernelVersion: String = EngineIdentity.kernelVersion
+    kernelVersion: String = EngineIdentity.kernelVersion,
+    gotenbergVersion: String? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.phase = phase
@@ -77,6 +79,7 @@ public struct EngineStatusDTO: Codable, Sendable {
     self.initfs = initfs
     self.imageDigest = imageDigest
     self.kernelVersion = kernelVersion
+    self.gotenbergVersion = gotenbergVersion
   }
 }
 
