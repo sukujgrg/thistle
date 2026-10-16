@@ -56,7 +56,7 @@ public struct EngineSettings: Codable, Equatable, Sendable {
       text = "http://\(text)"
     }
     guard let components = URLComponents(string: text) else {
-      throw EngineError.invalidEngineURL("could not parse \(trimmed)")
+      throw EngineError.invalidEngineURL("could not parse the URL")
     }
     let scheme = components.scheme?.lowercased() ?? ""
     guard scheme == "http" || scheme == "https" else {
@@ -65,12 +65,20 @@ public struct EngineSettings: Codable, Equatable, Sendable {
     guard let host = components.host, !host.isEmpty else {
       throw EngineError.invalidEngineURL("host is missing")
     }
+    guard components.user == nil, components.password == nil else {
+      throw EngineError.invalidEngineURL(
+        "enter credentials in the authentication controls, not in the URL")
+    }
+    guard components.query == nil, components.fragment == nil else {
+      throw EngineError.invalidEngineURL("use an API base URL without a query or fragment")
+    }
     var normalized = components
-    if normalized.path == "/" {
-      normalized.path = ""
+    normalized.host = host.lowercased()
+    while normalized.path.hasSuffix("/") {
+      normalized.path.removeLast()
     }
     guard let url = normalized.url else {
-      throw EngineError.invalidEngineURL("could not parse \(trimmed)")
+      throw EngineError.invalidEngineURL("could not parse the URL")
     }
     return url
   }

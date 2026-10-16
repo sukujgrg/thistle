@@ -388,6 +388,14 @@
     let output: ActionOutput
     let defaultFilename: String
 
+    var markPrefix: String? {
+      switch id {
+      case "pdf-watermark": "watermark"
+      case "pdf-stamp": "stamp"
+      default: nil
+      }
+    }
+
     var runTitle: String {
       switch output {
       case .json:
@@ -1168,29 +1176,8 @@
         path: "/forms/pdfengines/watermark",
         urlField: false,
         files: pdfFiles("Select one PDF."),
-        extraFiles: [
-          FileSlot(
-            field: "watermark",
-            label: "Watermark file",
-            types: ConvertUTType.images + ConvertUTType.pdf,
-            allowsMultiple: false,
-            help: "PNG, JPEG, WebP, or PDF.",
-            minimumCount: 1,
-            required: false,
-            extensions: ConvertUTType.imageExtensions.union(ConvertUTType.pdfExtensions))
-        ],
-        fields: [
-          picker(
-            "watermarkSource", "Source", ["text", "image", "pdf"], default: "text",
-            sendDefault: true),
-          text("watermarkExpression", "Text", default: "CONFIDENTIAL", sendDefault: true),
-          text("watermarkPages", "Pages"),
-          multiline(
-            "watermarkOptions",
-            "Options JSON",
-            default: ##"{"scale":"1 abs","rot":"45","fillcolor":"#C00000","op":"0.35"}"##,
-            sendDefault: true),
-        ],
+        extraFiles: [],
+        fields: [],
         output: .pdf,
         defaultFilename: "watermarked"
       ),
@@ -1203,28 +1190,8 @@
         path: "/forms/pdfengines/stamp",
         urlField: false,
         files: pdfFiles("Select one PDF."),
-        extraFiles: [
-          FileSlot(
-            field: "stamp",
-            label: "Stamp file",
-            types: ConvertUTType.images + ConvertUTType.pdf,
-            allowsMultiple: false,
-            help: "PNG, JPEG, WebP, or PDF.",
-            minimumCount: 1,
-            required: false,
-            extensions: ConvertUTType.imageExtensions.union(ConvertUTType.pdfExtensions))
-        ],
-        fields: [
-          picker(
-            "stampSource", "Source", ["text", "image", "pdf"], default: "text", sendDefault: true),
-          text("stampExpression", "Text", default: "APPROVED", sendDefault: true),
-          text("stampPages", "Pages"),
-          multiline(
-            "stampOptions",
-            "Options JSON",
-            default: ##"{"scale":"1 abs","rot":"45","fillcolor":"#C00000","op":"0.35"}"##,
-            sendDefault: true),
-        ],
+        extraFiles: [],
+        fields: [],
         output: .pdf,
         defaultFilename: "stamped"
       ),

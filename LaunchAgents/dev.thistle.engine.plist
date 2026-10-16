@@ -4,6 +4,10 @@
 <dict>
 	<key>Label</key>
 	<string>dev.thistle.engine</string>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>dev.thistle</string>
+	</array>
 	<key>BundleProgram</key>
 	<string>Contents/MacOS/ThistleEngine</string>
 	<key>MachServices</key>

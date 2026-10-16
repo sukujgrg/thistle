@@ -10,7 +10,7 @@
     init(controller: EngineController, compact: Bool) {
       if controller.highlightsUnappliedRemoteURL {
         color = .orange
-        label = "URL changed"
+        label = "Connection changed"
         return
       }
       color =

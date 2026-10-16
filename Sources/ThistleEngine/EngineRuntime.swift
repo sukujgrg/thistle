@@ -25,6 +25,7 @@
     private var rotateTask: Task<Void, Never>?
     private var recoverCount = 0
     private var generationDigest: String?
+    private var gotenbergVersion: String?
     private let client = GotenbergClient()
 
     init() {
@@ -44,7 +45,8 @@
         guestURL: engine?.baseURL.absoluteString,
         failedMessage: failedMessage,
         logs: logs,
-        imageDigest: engine?.imageDigest ?? cachedImageDigest()
+        imageDigest: engine?.imageDigest ?? cachedImageDigest(),
+        gotenbergVersion: gotenbergVersion
       )
     }
 
@@ -91,6 +93,7 @@
       startTask = nil
       let current = engine
       engine = nil
+      gotenbergVersion = nil
       if let current {
         try? await current.stop()
       }
@@ -138,10 +141,16 @@
       }
     }
 
-    func submit(jobID: String, path: String, fields: [String: String], files: [FileRefDTO])
+    func submit(jobID: String, path: String, fields: [MultipartField], files: [FileRefDTO])
       async throws -> JobResultDTO
     {
       let running = try await ensureEngine(forcePull: false)
+      if let issue = GotenbergCompatibility.issue(
+        version: gotenbergVersion, path: path, fields: fields)
+      {
+        throw EngineError.operationFailed(
+          issue + " Use Refresh Image to update the built-in engine.")
+      }
       touchIdle()
       let trace = HTTPTrace()
       let result: GotenbergClient.Response
@@ -204,10 +213,17 @@
           try? await started.stop()
           throw CancellationError()
         }
+        let version = try? await client.version(baseURL: started.baseURL)
+        guard !Task.isCancelled, bootToken == token else {
+          try? await started.stop()
+          throw CancellationError()
+        }
+        gotenbergVersion = version
         engine = started
         generationDigest = started.imageDigest
         phase = .running
         log("Ready at \(started.baseURL.absoluteString)")
+        if let version { log("Gotenberg \(version)") }
         touchIdle()
         startWatchdog()
         return started
@@ -255,10 +271,16 @@
 
     private func checkHealth() async {
       guard let engine, startTask == nil, case .running = phase else { return }
-      let ok = await client.ping(baseURL: engine.baseURL)
-      if ok {
+      do {
+        try await client.checkHealth(baseURL: engine.baseURL)
         recoverCount = 0
         return
+      } catch EngineError.localNetworkAccessDenied {
+        await stop()
+        fail(EngineError.localNetworkAccessDenied)
+        return
+      } catch {
+        // Other health failures still go through the normal crash recovery.
       }
       log("Engine unhealthy")
       await recover()
@@ -275,6 +297,7 @@
       log("Recovering engine (\(recoverCount)/\(EngineIdentity.recoverAttempts))")
       let current = engine
       engine = nil
+      gotenbergVersion = nil
       if let current {
         try? await current.stop()
       }

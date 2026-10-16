@@ -50,5 +50,9 @@ let package = Package(
         "ThistleSupport"
       ]
     ),
+    .testTarget(
+      name: "ThistleMacOSTests",
+      dependencies: ["ThistleMacOS", "ThistleSupport"]
+    ),
   ]
 )

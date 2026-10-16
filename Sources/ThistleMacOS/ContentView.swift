@@ -7,7 +7,7 @@
 
   struct ContentView: View {
     @Environment(EngineController.self) private var controller
-    @State private var selectedID: String? = ConvertAction.all.first?.id
+    @State private var selectedID: String? = "libreoffice-convert"
     @State private var search = ""
     @State private var copied = false
     @State private var hoveredID: String?
@@ -103,14 +103,22 @@
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
         if case .failed(let message) = controller.status {
-          Text(message)
-            .font(.callout)
-            .foregroundStyle(.red)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.red.opacity(0.08))
+          HStack(spacing: 12) {
+            Text(message)
+              .font(.callout)
+              .foregroundStyle(.red)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+            if controller.needsLocalNetworkAccess {
+              Button("Open System Settings") {
+                NSWorkspace.shared.open(
+                  URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+              }
+            }
+          }
+          .padding(.horizontal, 16)
+          .padding(.vertical, 10)
+          .background(.red.opacity(0.08))
         }
       }
     }

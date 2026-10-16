@@ -7,6 +7,7 @@ public enum EngineError: Error, Sendable, CustomStringConvertible {
   case notAppleSilicon
   case missingNetworkInterface
   case healthCheckFailed(String)
+  case localNetworkAccessDenied
   case convertFailed(status: Int, body: String)
   case notRunning
   case agentUnavailable(String)
@@ -30,6 +31,8 @@ public enum EngineError: Error, Sendable, CustomStringConvertible {
       "container has no IPv4 interface; check macOS 26 vmnet support"
     case .healthCheckFailed(let reason):
       "Engine did not become ready: \(reason)"
+    case .localNetworkAccessDenied:
+      "macOS blocked local-network access. Enable Thistle in System Settings > Privacy & Security > Local Network, then try again."
     case .convertFailed(let status, let body):
       "request failed (HTTP \(status)): \(body)"
     case .notRunning:
@@ -50,6 +53,6 @@ public enum EngineError: Error, Sendable, CustomStringConvertible {
   }
 
   public static func message(for error: Error) -> String {
-    (error as? EngineError)?.description ?? error.localizedDescription
+    (NetworkFailure.normalized(error) as? EngineError)?.description ?? error.localizedDescription
   }
 }

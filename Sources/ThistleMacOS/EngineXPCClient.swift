@@ -19,14 +19,19 @@
         at: plistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
 
       let loaded = isLoaded
-      let installedProgram = program(at: plistURL)
-      if loaded, installedProgram == helper {
+      let desired = configuration(
+        helper: helper, log: Paths.engineLog.path(percentEncoded: false),
+        bundleIdentifier: Bundle.main.bundleIdentifier ?? EngineIdentity.appBundleIdentifier)
+      if loaded, let installed = NSDictionary(contentsOf: plistURL), installed.isEqual(to: desired)
+      {
         return
       }
       if loaded {
         _ = try? launchctl(["bootout", domainLabel])
       }
-      try writePlist(helper: helper, to: plistURL)
+      let data = try PropertyListSerialization.data(
+        fromPropertyList: desired, format: .xml, options: 0)
+      try data.write(to: plistURL, options: .atomic)
       let result = try launchctl(["bootstrap", domain, plistURL.path(percentEncoded: false)])
       if result.status != 0, !result.output.contains("already") {
         throw EngineError.agentUnavailable(
@@ -57,23 +62,17 @@
         .appendingPathComponent(EngineIdentity.agentPlist)
     }
 
-    private static func program(at url: URL) -> String? {
-      let dict = NSDictionary(contentsOf: url)
-      return (dict?["ProgramArguments"] as? [String])?.first
-    }
-
-    private static func writePlist(helper: String, to url: URL) throws {
-      let log = Paths.engineLog.path(percentEncoded: false)
-      let plist: [String: Any] = [
+    static func configuration(helper: String, log: String, bundleIdentifier: String) -> [String:
+      Any]
+    {
+      [
         "Label": EngineIdentity.xpcService,
         "ProgramArguments": [helper],
+        "AssociatedBundleIdentifiers": [bundleIdentifier],
         "MachServices": [EngineIdentity.xpcService: true],
         "StandardOutPath": log,
         "StandardErrorPath": log,
       ]
-      let data = try PropertyListSerialization.data(
-        fromPropertyList: plist, format: .xml, options: 0)
-      try data.write(to: url, options: .atomic)
     }
 
     private static func launchctl(_ arguments: [String]) throws -> (status: Int32, output: String) {
@@ -165,7 +164,7 @@
       try await call(timeout: .seconds(5)) { $0.clearLogs(reply: $1) }
     }
 
-    func submit(jobID: String, path: String, fields: [String: String], files: [FileRefDTO])
+    func submit(jobID: String, path: String, fields: [MultipartField], files: [FileRefDTO])
       async throws -> JobResultDTO
     {
       let fieldsJSON = try JSONEncoder().encode(fields)

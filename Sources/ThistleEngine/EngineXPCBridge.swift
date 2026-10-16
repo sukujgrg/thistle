@@ -95,7 +95,7 @@
     ) {
       Task {
         do {
-          let fields = try JSONDecoder().decode([String: String].self, from: fieldsJSON)
+          let fields = try JSONDecoder().decode([MultipartField].self, from: fieldsJSON)
           let files = try JSONDecoder().decode([FileRefDTO].self, from: filesJSON)
           let result = try await runtime.submit(
             jobID: jobID, path: path, fields: fields, files: files)
