@@ -93,6 +93,8 @@
                 Text(copied ? "Copied" : "Copy URL")
               }
               .buttonStyle(ToolbarPillButtonStyle())
+              .accessibilityLabel(copied ? "URL copied" : "Copy Local API URL")
+              .accessibilityValue(url)
               .onChange(of: url) { _, _ in
                 copied = false
               }
@@ -108,11 +110,21 @@
               .font(.callout)
               .foregroundStyle(.red)
               .textSelection(.enabled)
+              .accessibilityLabel("Engine failure")
+              .accessibilityValue(message)
               .frame(maxWidth: .infinity, alignment: .leading)
             if controller.needsLocalNetworkAccess {
-              Button("Open System Settings") {
-                NSWorkspace.shared.open(
-                  URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+              Button("Open Local Network Settings") {
+                if let url = try? EngineSettings.parseURL(controller.remoteURLText),
+                  LocalNetworkPrivacy.urlRequiresPermission(url)
+                {
+                  LocalNetworkPrivacy.triggerAlert()
+                }
+                NSWorkspace.shared.open(LocalNetworkPrivacy.settingsURL)
+              }
+            } else if controller.needsAgentApproval {
+              Button("Open Login Items") {
+                EngineAgent.openLoginItemsSettings()
               }
             }
           }
@@ -196,15 +208,16 @@
         controller.inspectorPresented.toggle()
       } label: {
         HStack(spacing: 6) {
-          Circle()
-            .fill(chrome.color)
-            .frame(width: 8, height: 8)
-          Text(chrome.label)
-            .foregroundStyle(.secondary)
           if controller.isStarting {
             ProgressView()
               .controlSize(.small)
+          } else {
+            Circle()
+              .fill(chrome.color)
+              .frame(width: 8, height: 8)
           }
+          Text(chrome.label)
+            .foregroundStyle(.secondary)
           Image(systemName: controller.inspectorPresented ? "chevron.up" : "chevron.down")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.tertiary)
@@ -215,6 +228,11 @@
       }
       .buttonStyle(.plain)
       .help("Engine inspector")
+      .accessibilityLabel("Engine status")
+      .accessibilityValue(chrome.label)
+      .accessibilityHint(
+        controller.inspectorPresented
+          ? "Hides the engine inspector" : "Shows the engine inspector")
     }
 
     @ViewBuilder

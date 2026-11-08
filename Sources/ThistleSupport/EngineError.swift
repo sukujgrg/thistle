@@ -16,6 +16,10 @@ public enum EngineError: Error, Sendable, CustomStringConvertible {
   case protocolMismatch(Int)
   case invalidEngineURL(String)
   case stagingFailed(String)
+  case hostAPIPortInUse(Int)
+  case apiBridgeFailed(String)
+  case guestForwarderFailed(String)
+  case guestForwarderMissing(String)
 
   public var description: String {
     switch self {
@@ -32,7 +36,7 @@ public enum EngineError: Error, Sendable, CustomStringConvertible {
     case .healthCheckFailed(let reason):
       "Engine did not become ready: \(reason)"
     case .localNetworkAccessDenied:
-      "macOS blocked local-network access. Enable Thistle in System Settings > Privacy & Security > Local Network, then try again."
+      "macOS blocked local-network access. Allow Thistle in System Settings > Privacy & Security > Local Network, then try again."
     case .convertFailed(let status, let body):
       "request failed (HTTP \(status)): \(body)"
     case .notRunning:
@@ -49,6 +53,14 @@ public enum EngineError: Error, Sendable, CustomStringConvertible {
       "Custom Gotenberg URL is invalid: \(reason)"
     case .stagingFailed(let reason):
       reason
+    case .hostAPIPortInUse(let port):
+      "Local API port \(port) is already in use. Choose another port in Advanced settings (try 18766, 18767, or 28765), then Start Engine again."
+    case .apiBridgeFailed(let reason):
+      "Local API bridge failed: \(reason)"
+    case .guestForwarderFailed(let reason):
+      "Guest API forwarder failed: \(reason)"
+    case .guestForwarderMissing(let path):
+      "Guest API forwarder is missing at \(path). Run make guest-forwarder, then rebuild the app."
     }
   }
 

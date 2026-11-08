@@ -26,9 +26,11 @@ make run
 
 That builds `bin/Thistle.app` with `ThistleEngine` inside, signs the helper with `com.apple.security.virtualization`, and opens the GUI. Enable **Thistle Engine** in System Settings > General > Login Items if macOS asks.
 
-Local builds use an installed Developer ID Application or Apple Development signing identity when available, so macOS can retain Local Network permission across rebuilds. To choose a certificate, pass `SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)"`. Without a certificate the build falls back to ad-hoc signing, which may require granting permission again after a rebuild.
+Local builds use an installed Developer ID Application or Apple Development signing identity when available. To choose a certificate, pass `SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)"`. Without a certificate the build falls back to ad-hoc signing.
 
-The built-in VM is reached over a local network interface. Allow **Thistle** when macOS asks for Local Network access. If a start reports that local-network access is blocked, open System Settings > Privacy & Security > Local Network, enable Thistle, and start the engine again. The LaunchAgent is associated with Thistle so the permission belongs to the app.
+The built-in API is published on **`http://127.0.0.1:18765`** by default. ThistleEngine bridges that loopback port to Gotenberg inside the guest over vsock, so built-in start and converts do not need Local Network permission. Guest egress still uses vmnet (for URL→PDF). If 18765 is already taken, pick another port in the engine inspector **Advanced** settings (suggestions: 18766, 18767, 28765). Build the guest forwarder with `make guest-forwarder` (Docker, linux/arm64); `make app` installs it into the bundle.
+
+If you point a **custom** engine URL at a LAN host, macOS may ask for Local Network access for **Thistle**.
 
 `make build` installs a release configuration app into `~/Applications`. For distribution, update `VERSION`, commit and push to `main`, then run `make release`. The ViewTheWord/eucaly release flow validates CI, signs, notarizes, tags, and publishes automatically. See [MAINTAINERS.md](MAINTAINERS.md) for setup and recovery. The app checks GitHub for a newer notarized zip and can replace itself from **Thistle > Check for Updates...**.
 
@@ -38,9 +40,9 @@ The first **Start Engine** downloads a Kata arm64 kernel, Apple's `vminit`, and 
 
 ![Built-in VM engine status, guest URL, and log](images/thistle2.png)
 
-The VM uses 1 CPU and 2 GiB of memory. The guest still listens on port 3000. The host address is the vmnet IPv4. Copy it from the toolbar if another client should call the same engine.
+The VM uses 1 CPU and 2 GiB of memory. Gotenberg listens on guest port 3000; the host Local API defaults to `http://127.0.0.1:18765` (changeable under Advanced). Copy that from the toolbar if another client on this Mac should call the same engine.
 
-The **Start Engine** control is a split button. The menu has **Restart**, **Refresh Image** (pull a new digest and rebuild the rootfs), and **Reset** (delete downloaded engine data, temporary jobs, and logs while keeping settings). Those actions open the engine banner so the log stays visible.
+The **Start Engine** control is a split button. The menu has **Restart**, **Refresh Image** (pull a new digest and rebuild the rootfs), and **Reset** (delete downloaded engine data, temporary jobs, and logs while keeping settings). Status shows a spinner while those run; open the engine inspector from the status control when you want the log.
 
 The inspector has a **Built-in VM** toggle. Off uses a custom Gotenberg URL (for example `http://127.0.0.1:3000`) and stops the guest if it is running. Connect the URL, then conversions go to that API. Turning **Built-in VM** on again returns to the local engine; **Start Engine** then boots the guest.
 
@@ -64,7 +66,7 @@ JSON routes (read metadata, read bookmarks) show the result in the window. Binar
 
 - Intel Macs and Rosetta are not supported.
 - No App Store sandbox. Developer ID plus the virtualization entitlement on the helper is enough to distribute.
-- The guest cannot bind port 0. The VM IPv4 is the ephemeral part.
+- Built-in host API traffic uses loopback (`127.0.0.1`, default port 18765) over vsock; vmnet is for guest egress only.
 - A previous LibreOffice-only rootfs in Application Support is unused. The full image unpacks to its own cache file.
 
 ## License

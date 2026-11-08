@@ -34,10 +34,10 @@ struct NetworkFailureTests {
     #expect(!NetworkFailure.isLocalNetworkDenied(error))
   }
 
-  @Test func readinessStopsOnTheFirstPermissionFailure() async {
+  @Test func readinessRetriesPermissionFailuresUntilTimeout() async {
     let attempts = RequestAttempts()
     do {
-      try await GotenbergClient.waitUntilHealthy(baseURL: url, timeout: .seconds(180)) { _ in
+      try await GotenbergClient.waitUntilHealthy(baseURL: url, timeout: .milliseconds(1200)) { _ in
         await attempts.increment()
         throw denied()
       }
@@ -48,7 +48,7 @@ struct NetworkFailureTests {
         Issue.record("Unexpected error \(error)")
       }
     } catch { Issue.record("Unexpected error \(error)") }
-    #expect(await attempts.count == 1)
+    #expect(await attempts.count > 1)
   }
 
   @Test func readinessStillRetriesWhileTheServerIsStarting() async throws {

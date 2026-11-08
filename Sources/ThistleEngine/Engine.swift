@@ -13,14 +13,23 @@
   final class Engine: @unchecked Sendable {
     private var manager: ContainerManager
     private var container: LinuxContainer
+    private var apiBridge: GuestAPIBridge
+    private var forwarder: LinuxProcess?
     let baseURL: URL
     let imageDigest: String
 
     private init(
-      manager: ContainerManager, container: LinuxContainer, baseURL: URL, imageDigest: String
+      manager: ContainerManager,
+      container: LinuxContainer,
+      apiBridge: GuestAPIBridge,
+      forwarder: LinuxProcess?,
+      baseURL: URL,
+      imageDigest: String
     ) {
       self.manager = manager
       self.container = container
+      self.apiBridge = apiBridge
+      self.forwarder = forwarder
       self.baseURL = baseURL
       self.imageDigest = imageDigest
     }
@@ -32,6 +41,8 @@
     ) async throws -> Engine {
       try Paths.ensureDirectories()
       invalidateStaleCaches()
+
+      let forwarderHostBinary = try GuestForwarder.hostBinaryURL()
 
       onProgress(.kernel)
       let kernelURL = try await KernelManager.ensureKernel(
@@ -89,17 +100,20 @@
         setEnv(&env, "LIBREOFFICE_AUTO_START", "true")
         setEnv(&env, "CHROMIUM_AUTO_START", "true")
         config.process.environmentVariables = env
+        // Publish the forwarder binary into the guest without baking it into rootfs.
+        config.mounts.append(GuestForwarder.shareMount(hostBinary: forwarderHostBinary))
       }
 
-      guard let iface = container.config.interfaces.first else {
+      // vmnet remains for guest egress only; host API uses loopback + vsock.
+      guard container.config.interfaces.first != nil else {
         try? manager.delete(EngineIdentity.containerID)
         throw EngineError.missingNetworkInterface
       }
-      let ip = iface.ipv4Address.address.description
-      guard let baseURL = URL(string: "http://\(ip):\(EngineIdentity.guestPort)") else {
-        try? manager.delete(EngineIdentity.containerID)
-        throw EngineError.missingNetworkInterface
-      }
+
+      let hostAPIPort = EngineSettings.load().hostAPIPort
+      let baseURL = EngineIdentity.loopbackAPIURL(port: hostAPIPort)
+      var bridge: GuestAPIBridge?
+      var forwarder: LinuxProcess?
 
       do {
         onProgress(.booting)
@@ -107,10 +121,30 @@
         try await container.create()
         try await container.start()
 
+        forwarder = try await GuestForwarder.start(on: container)
+        try await GuestForwarder.waitUntilAccepting { port in
+          try await container.dialVsock(port: port)
+        }
+
+        let apiBridge = GuestAPIBridge(
+          dialVsock: { port in
+            try await container.dialVsock(port: port)
+          },
+          port: UInt16(hostAPIPort)
+        )
+        // Assign before start so failure cleanup always stops the listener.
+        bridge = apiBridge
+        try await apiBridge.start()
+
         onProgress(.waitingForAPI)
         await Task.yield()
         try await GotenbergClient.waitUntilHealthy(baseURL: baseURL)
       } catch {
+        bridge?.stop()
+        bridge = nil
+        if let forwarder {
+          try? await forwarder.kill(.term)
+        }
         try? await container.stop()
         try? manager.delete(EngineIdentity.containerID)
         try? FileManager.default.removeItem(at: Paths.writable)
@@ -131,11 +165,22 @@
       ).save()
 
       return Engine(
-        manager: manager, container: container, baseURL: baseURL, imageDigest: imageRef.digest)
+        manager: manager,
+        container: container,
+        apiBridge: bridge!,
+        forwarder: forwarder,
+        baseURL: baseURL,
+        imageDigest: imageRef.digest)
     }
 
     @concurrent
     func stop() async throws {
+      apiBridge.stop()
+      if let forwarder {
+        try? await forwarder.kill(.term)
+        self.forwarder = nil
+      }
+
       var firstError: Error?
       do {
         try await container.stop()

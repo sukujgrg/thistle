@@ -109,8 +109,16 @@ public actor GotenbergClient {
 
   public static func waitUntilHealthy(baseURL: URL, timeout: Duration = .seconds(180)) async throws
   {
+    // TN3179: waitsForConnectivity handles the case where the first local-network
+    // attempt fails before the user answers the privacy alert.
+    let config = URLSessionConfiguration.ephemeral
+    config.waitsForConnectivity = true
+    config.timeoutIntervalForRequest = 5
+    config.timeoutIntervalForResource = 30
+    let session = URLSession(configuration: config)
+    defer { session.finishTasksAndInvalidate() }
     try await waitUntilHealthy(baseURL: baseURL, timeout: timeout) {
-      try await URLSession.shared.data(for: $0)
+      try await session.data(for: $0)
     }
   }
 
@@ -121,6 +129,7 @@ public actor GotenbergClient {
     let request = healthRequest(baseURL: baseURL)
     let deadline = ContinuousClock.now + timeout
     var lastError = "timed out"
+    var sawLocalNetworkDenial = false
     while ContinuousClock.now < deadline {
       do {
         let (_, response) = try await dataLoader(request)
@@ -129,10 +138,18 @@ public actor GotenbergClient {
         lastError = status.detail
       } catch {
         try Task.checkCancellation()
-        if NetworkFailure.isLocalNetworkDenied(error) { throw EngineError.localNetworkAccessDenied }
-        lastError = error.localizedDescription
+        // TN3179: keep retrying while Local Network privilege may still be undetermined.
+        if NetworkFailure.isLocalNetworkDenied(error) {
+          sawLocalNetworkDenial = true
+          lastError = EngineError.localNetworkAccessDenied.description
+        } else {
+          lastError = error.localizedDescription
+        }
       }
       try await Task.sleep(for: .milliseconds(500))
+    }
+    if sawLocalNetworkDenial {
+      throw EngineError.localNetworkAccessDenied
     }
     throw EngineError.healthCheckFailed(lastError)
   }

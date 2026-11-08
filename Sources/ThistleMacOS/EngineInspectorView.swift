@@ -8,6 +8,8 @@
   struct EngineInspectorView: View {
     @Environment(EngineController.self) private var controller
     @State private var snapshot: EngineSnapshot
+    @State private var advancedExpanded = false
+    @State private var logExpanded = false
 
     init() {
       _snapshot = State(initialValue: EngineSnapshot.placeholder(guestURL: nil))
@@ -40,6 +42,7 @@
           remoteFacts
         } else {
           facts
+          advancedSection
         }
 
         versionSection
@@ -202,6 +205,98 @@
       return draft.isEmpty ? "—" : draft
     }
 
+    /// Ready uses the running URL; otherwise the configured Advanced port.
+    private var localAPIValue: String {
+      snapshot.guestURL ?? controller.configuredLoopbackAPIURL.absoluteString
+    }
+
+    private var advancedSection: some View {
+      @Bindable var controller = controller
+      return VStack(alignment: .leading, spacing: 8) {
+        disclosureHeader(
+          title: "Advanced",
+          expanded: advancedExpanded,
+          hint: advancedExpanded
+            ? "Hides Local API port settings" : "Shows Local API port settings"
+        ) {
+          advancedExpanded.toggle()
+        }
+        if advancedExpanded {
+          VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+              Text("Local API port")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(width: 96, alignment: .leading)
+              TextField("18765", text: $controller.hostAPIPortText)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.callout, design: .monospaced))
+                .frame(width: 88)
+                .disabled(controller.isStarting || controller.isWorking)
+                .onSubmit {
+                  Task { await controller.applyHostAPIPort() }
+                }
+              Button("Apply") {
+                Task { await controller.applyHostAPIPort() }
+              }
+              .buttonStyle(.borderless)
+              .disabled(
+                controller.isStarting || controller.isWorking
+                  || !controller.hasUnappliedHostAPIPort)
+            }
+            HStack(spacing: 8) {
+              Text("Suggestions")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+              ForEach(EngineSettings.suggestedHostAPIPorts, id: \.self) { port in
+                Button("\(port)") {
+                  controller.selectHostAPIPort(port)
+                }
+                .buttonStyle(.borderless)
+                .font(.system(.caption, design: .monospaced))
+                .disabled(controller.isStarting || controller.isWorking)
+              }
+            }
+            Text(
+              controller.isRunning
+                ? "Apply restarts the engine so Copy URL matches the new port."
+                : "Used on the next Start Engine. Copy URL follows the running Local API."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          }
+          .padding(.leading, 18)
+        }
+      }
+    }
+
+    private func disclosureHeader(
+      title: String,
+      expanded: Bool,
+      hint: String,
+      action: @escaping () -> Void
+    ) -> some View {
+      Button(action: action) {
+        HStack(spacing: 6) {
+          Image(systemName: "chevron.right")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .rotationEffect(.degrees(expanded ? 90 : 0))
+          Text(title)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .padding(.vertical, 2)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(title)
+      .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+      .accessibilityHint(hint)
+    }
+
     private var facts: some View {
       VStack(alignment: .leading, spacing: 6) {
         fact("Image", snapshot.image)
@@ -214,7 +309,9 @@
           "\(ByteFormat.path(snapshot.storePath))  \(ByteFormat.string(snapshot.storeSize))")
         fact("Log file", logFileValue)
         fact("VM", "\(snapshot.cpus) CPU · \(snapshot.memoryMiB) MiB")
-        fact("Guest", snapshot.guestURL ?? "—")
+        fact(
+          controller.usesRemote ? "API" : "Local API",
+          localAPIValue)
         fact("Container", snapshot.containerID)
       }
       .textSelection(.enabled)
@@ -277,13 +374,35 @@
     private var logSection: some View {
       VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 8) {
-          Text("Log")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-          Text("Last \(EngineLogEntry.retainedCount) events")
-            .font(.caption)
-            .foregroundStyle(.tertiary)
+          Button {
+            logExpanded.toggle()
+          } label: {
+            HStack(spacing: 6) {
+              Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(logExpanded ? 90 : 0))
+              Text("Log")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+              Text("Last \(EngineLogEntry.retainedCount) events")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+              Text(logExpanded ? "Show less" : "Show more")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 2)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Log")
+          .accessibilityValue(logExpanded ? "Expanded" : "Collapsed")
+          .accessibilityHint(
+            logExpanded ? "Shows a shorter log preview" : "Shows a taller log panel")
+
           Spacer(minLength: 8)
+
           if !controller.logs.isEmpty {
             Button("Copy") {
               NSPasteboard.general.clearContents()
@@ -297,11 +416,12 @@
           }
         }
         LogTextView(text: logText, isEmpty: controller.logs.isEmpty)
-          .frame(minHeight: 64, maxHeight: 88)
+          .frame(minHeight: logExpanded ? 180 : 64, maxHeight: logExpanded ? 260 : 88)
           .padding(8)
           .background(
             .quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous)
           )
+          .animation(.snappy(duration: 0.2), value: logExpanded)
       }
     }
 

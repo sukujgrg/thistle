@@ -35,6 +35,7 @@
     var imageDigest: String?
     var settings: EngineSettings
     var remoteURLText: String
+    var hostAPIPortText: String
     var remoteCredentials = RemoteCredentials()
     var gotenbergVersion: String?
     var latestGotenbergRelease: GotenbergRelease?
@@ -60,6 +61,7 @@
     init(settings loaded: EngineSettings = .load()) {
       settings = loaded
       remoteURLText = loaded.remoteURL
+      hostAPIPortText = "\(loaded.hostAPIPort)"
       if let url = try? EngineSettings.parseURL(loaded.remoteURL) {
         credentialURL = url
         do {
@@ -98,11 +100,27 @@
     var usesRemote: Bool { settings.usesRemote }
 
     var needsLocalNetworkAccess: Bool {
+      guard usesRemote else { return false }
       guard case .failed(let message) = status else { return false }
-      return message.contains(EngineError.localNetworkAccessDenied.description)
+      guard message.contains(EngineError.localNetworkAccessDenied.description) else { return false }
+      guard let url = try? EngineSettings.parseURL(remoteURLText) else { return true }
+      return LocalNetworkPrivacy.urlRequiresPermission(url)
+    }
+
+    var needsAgentApproval: Bool {
+      guard case .failed(let message) = status else { return false }
+      return message.contains(EngineError.agentNeedsApproval.description)
     }
 
     var canManageVM: Bool { !usesRemote }
+
+    var configuredLoopbackAPIURL: URL { settings.loopbackAPIURL }
+
+    var hasUnappliedHostAPIPort: Bool {
+      guard !usesRemote else { return false }
+      guard let port = try? EngineSettings.parseHostAPIPort(hostAPIPortText) else { return true }
+      return port != settings.hostAPIPort
+    }
 
     var hasUnappliedRemoteURL: Bool {
       guard usesRemote else { return false }
@@ -165,6 +183,25 @@
       }
     }
 
+    func selectHostAPIPort(_ port: Int) {
+      hostAPIPortText = "\(EngineSettings.normalizedHostAPIPort(port))"
+    }
+
+    func applyHostAPIPort() async {
+      guard canManageVM else { return }
+      do {
+        let port = try EngineSettings.parseHostAPIPort(hostAPIPortText)
+        let changed = port != settings.hostAPIPort
+        settings.hostAPIPort = port
+        hostAPIPortText = "\(port)"
+        persistSettings()
+        guard changed, isRunning else { return }
+        await restart()
+      } catch {
+        applyError(error)
+      }
+    }
+
     func applyRemoteURL() async {
       if !usesRemote {
         await setMode(.remote)
@@ -201,7 +238,6 @@
         await applyRemoteURL()
         return
       }
-      inspectorPresented = true
       status = .starting("Starting engine")
       do {
         try client.connect()
@@ -226,7 +262,6 @@
 
     func restart() async {
       guard canManageVM else { return }
-      inspectorPresented = true
       status = .starting("Restarting engine")
       do {
         try client.connect()
@@ -239,7 +274,6 @@
 
     func refreshImage() async {
       guard canManageVM else { return }
-      inspectorPresented = true
       status = .starting("Refreshing image")
       do {
         try client.connect()
@@ -252,7 +286,6 @@
 
     func resetEngine() async {
       guard canManageVM else { return }
-      inspectorPresented = true
       status = .starting("Resetting engine")
       do {
         try client.connect()
@@ -477,6 +510,9 @@
       let credentials = appliedRemoteCredentials
       do {
         if let credentialLoadError { throw EngineError.operationFailed(credentialLoadError) }
+        if connecting, LocalNetworkPrivacy.urlRequiresPermission(url) {
+          LocalNetworkPrivacy.triggerAlert()
+        }
         try await http.checkHealth(baseURL: url, credentials: credentials)
         // /health may be public while /version and conversions require authentication.
         // Probe the version on connection/reconnection, not on every health poll.

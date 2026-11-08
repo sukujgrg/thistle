@@ -2,47 +2,64 @@
 
   import Darwin
   import Foundation
+  import ServiceManagement
 
   import ThistleSupport
 
   enum EngineAgent {
+    private static var service: SMAppService {
+      SMAppService.agent(plistName: EngineIdentity.agentPlist)
+    }
+
     static func register() throws {
       try Paths.ensureDirectories()
-      let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ThistleEngine")
+      let helper = Bundle.main.bundleURL
+        .appendingPathComponent("Contents/MacOS/ThistleEngine", isDirectory: false)
         .path(percentEncoded: false)
       guard FileManager.default.isExecutableFile(atPath: helper) else {
         throw EngineError.agentUnavailable("helper missing at \(helper)")
       }
 
-      let plistURL = launchAgentPlist
-      try FileManager.default.createDirectory(
-        at: plistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+      // Drop obsolete ~/Library LaunchAgents only. Never bootout the live
+      // SMAppService job — that shares this label and breaks XPC.
+      removeLegacyLaunchAgentPlist()
 
-      let loaded = isLoaded
-      let desired = configuration(
-        helper: helper, log: Paths.engineLog.path(percentEncoded: false),
-        bundleIdentifier: Bundle.main.bundleIdentifier ?? EngineIdentity.appBundleIdentifier)
-      if loaded, let installed = NSDictionary(contentsOf: plistURL), installed.isEqual(to: desired)
-      {
+      switch service.status {
+      case .enabled:
+        try ensureJobRunning()
         return
+      case .requiresApproval:
+        throw EngineError.agentNeedsApproval
+      case .notRegistered, .notFound:
+        break
+      @unknown default:
+        break
       }
-      if loaded {
-        _ = try? launchctl(["bootout", domainLabel])
+
+      do {
+        try service.register()
+      } catch {
+        if service.status == .requiresApproval {
+          throw EngineError.agentNeedsApproval
+        }
+        throw EngineError.agentUnavailable(error.localizedDescription)
       }
-      let data = try PropertyListSerialization.data(
-        fromPropertyList: desired, format: .xml, options: 0)
-      try data.write(to: plistURL, options: .atomic)
-      let result = try launchctl(["bootstrap", domain, plistURL.path(percentEncoded: false)])
-      if result.status != 0, !result.output.contains("already") {
-        throw EngineError.agentUnavailable(
-          result.output.isEmpty ? "launchctl bootstrap failed" : result.output)
+
+      switch service.status {
+      case .enabled:
+        try ensureJobRunning()
+      case .requiresApproval:
+        throw EngineError.agentNeedsApproval
+      default:
+        throw EngineError.agentUnavailable("engine helper is not enabled")
       }
-      _ = try? launchctl(["kickstart", domainLabel])
     }
 
     static func unload() {
-      guard isLoaded else { return }
+      removeLegacyLaunchAgentPlist()
+      // Boot out before unregister so a stale Mach bootstrap cannot linger.
       _ = try? launchctl(["bootout", domainLabel])
+      try? service.unregister()
       let deadline = Date().addingTimeInterval(5)
       while isLoaded, Date() < deadline {
         Thread.sleep(forTimeInterval: 0.1)
@@ -50,29 +67,82 @@
     }
 
     static var isLoaded: Bool {
+      if service.status == .enabled { return true }
+      // Legacy ~/Library/LaunchAgents bootstrap from before SMAppService.
+      return isJobPrinted
+    }
+
+    static var needsApproval: Bool {
+      service.status == .requiresApproval
+    }
+
+    static func openLoginItemsSettings() {
+      SMAppService.openSystemSettingsLoginItems()
+    }
+
+    /// Shape of the LaunchAgent plist shipped in Contents/Library/LaunchAgents.
+    static func configuration(
+      bundleProgram: String = "Contents/MacOS/ThistleEngine",
+      bundleIdentifier: String
+    ) -> [String: Any] {
+      [
+        "Label": EngineIdentity.xpcService,
+        "BundleProgram": bundleProgram,
+        "AssociatedBundleIdentifiers": [bundleIdentifier],
+        "MachServices": [EngineIdentity.xpcService: true],
+      ]
+    }
+
+    private static var domainLabel: String { "gui/\(getuid())/\(EngineIdentity.xpcService)" }
+
+    private static var isJobPrinted: Bool {
       (try? launchctl(["print", domainLabel]).status) == 0
     }
 
-    private static var domain: String { "gui/\(getuid())" }
-    private static var domainLabel: String { "\(domain)/\(EngineIdentity.xpcService)" }
-
-    private static var launchAgentPlist: URL {
+    private static var legacyLaunchAgentPlist: URL {
       FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/LaunchAgents")
         .appendingPathComponent(EngineIdentity.agentPlist)
     }
 
-    static func configuration(helper: String, log: String, bundleIdentifier: String) -> [String:
-      Any]
-    {
-      [
-        "Label": EngineIdentity.xpcService,
-        "ProgramArguments": [helper],
-        "AssociatedBundleIdentifiers": [bundleIdentifier],
-        "MachServices": [EngineIdentity.xpcService: true],
-        "StandardOutPath": log,
-        "StandardErrorPath": log,
-      ]
+    private static func removeLegacyLaunchAgentPlist() {
+      try? FileManager.default.removeItem(at: legacyLaunchAgentPlist)
+    }
+
+    /// SMAppService can report `.enabled` while the job is not loaded (for example
+    /// after a mistaken bootout). Kickstart, or re-register if needed.
+    private static func ensureJobRunning() throws {
+      if isJobPrinted { return }
+      _ = try? launchctl(["kickstart", "-k", domainLabel])
+      let deadline = Date().addingTimeInterval(3)
+      while !isJobPrinted, Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.1)
+      }
+      if isJobPrinted { return }
+
+      try? service.unregister()
+      do {
+        try service.register()
+      } catch {
+        if service.status == .requiresApproval {
+          throw EngineError.agentNeedsApproval
+        }
+        throw EngineError.agentUnavailable(error.localizedDescription)
+      }
+      guard service.status == .enabled else {
+        if service.status == .requiresApproval {
+          throw EngineError.agentNeedsApproval
+        }
+        throw EngineError.agentUnavailable("engine helper is not enabled")
+      }
+      _ = try? launchctl(["kickstart", "-k", domainLabel])
+      let retryDeadline = Date().addingTimeInterval(3)
+      while !isJobPrinted, Date() < retryDeadline {
+        Thread.sleep(forTimeInterval: 0.1)
+      }
+      if !isJobPrinted {
+        throw EngineError.agentUnavailable("engine helper did not start")
+      }
     }
 
     private static func launchctl(_ arguments: [String]) throws -> (status: Int32, output: String) {

@@ -272,15 +272,12 @@
     private func checkHealth() async {
       guard let engine, startTask == nil, case .running = phase else { return }
       do {
+        // Built-in health uses loopback only; Local Network denial does not apply.
         try await client.checkHealth(baseURL: engine.baseURL)
         recoverCount = 0
         return
-      } catch EngineError.localNetworkAccessDenied {
-        await stop()
-        fail(EngineError.localNetworkAccessDenied)
-        return
       } catch {
-        // Other health failures still go through the normal crash recovery.
+        // Health failures go through crash recovery (bridge/guest recycle).
       }
       log("Engine unhealthy")
       await recover()

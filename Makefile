@@ -18,12 +18,15 @@ NOTES_FILE ?=
 SIGNING_IDENTITY ?=
 # Optional notes must be outside the checkout, e.g. /tmp/thistle-notes.md.
 
-.PHONY: help all build app clean run fmt test test-release release release-check release-notarize release-publish
+GUEST_FORWARDER = Resources/guest-forwarder/linux-arm64/vsock-tcp-forward
+
+.PHONY: help all build app clean run fmt test test-release release release-check release-notarize release-publish guest-forwarder
 
 help:
 	@printf '%s\n' \
 	  'make build             Build an Apple Silicon app into ~/Applications' \
 	  'make run               Build and open a debug app from bin/' \
+	  'make guest-forwarder   Cross-build the linux/arm64 vsock→TCP guest forwarder' \
 	  'make release           Validate, sign, notarize, tag, and publish from this Mac' \
 	  'make release-check     Check source, destination, and CI only' \
 	  'make release-notarize  Produce signed local artifacts without publishing' \
@@ -36,18 +39,24 @@ all: build
 build:
 	APP_INSTALL_DIR="$(APP_INSTALL_DIR)" SIGNING_IDENTITY="$(SIGNING_IDENTITY)" bash scripts/build.sh
 
+guest-forwarder: $(GUEST_FORWARDER)
+
+$(GUEST_FORWARDER): guest-forwarder/vsock-tcp-forward.c scripts/build-guest-forwarder.sh
+	bash scripts/build-guest-forwarder.sh
+
 # Bundle assembly shared by local development and the distribution driver.
-app:
+app: $(GUEST_FORWARDER)
 	$(SWIFT) build $(SWIFT_BUILD_FLAGS) -c $(BUILD_CONFIGURATION) $(SWIFT_STRIP)
 	rm -rf "$(APP)"
 	mkdir -p "$(APP)/Contents/MacOS"
 	mkdir -p "$(APP)/Contents/Library/LaunchAgents"
-	mkdir -p "$(APP)/Contents/Resources"
+	mkdir -p "$(APP)/Contents/Resources/guest-forwarder/linux-arm64"
 	bash scripts/generate-info-plist.sh VERSION Info.plist "$(APP)/Contents/Info.plist"
 	cp LaunchAgents/$(AGENT_LABEL).plist "$(APP)/Contents/Library/LaunchAgents/$(AGENT_LABEL).plist"
 	install "$(BUILD_BIN_DIR)/Thistle" "$(APP)/Contents/MacOS/Thistle"
 	install "$(BUILD_BIN_DIR)/ThistleEngine" "$(APP)/Contents/MacOS/ThistleEngine"
 	install "$(BUILD_BIN_DIR)/ThistleUpdater" "$(APP)/Contents/MacOS/ThistleUpdater"
+	install "$(GUEST_FORWARDER)" "$(APP)/Contents/Resources/guest-forwarder/linux-arm64/vsock-tcp-forward"
 	xcrun actool \
 		--compile "$(APP)/Contents/Resources" \
 		--platform macosx \
