@@ -1,6 +1,6 @@
 # thistle
 
-A Mac app that talks to [Gotenberg](https://gotenberg.dev). It can boot the full Gotenberg image on Apple silicon in a built-in VM, or send requests to a Gotenberg API you already run.
+A Mac app that talks to [Gotenberg](https://gotenberg.dev) **9**. It can boot the full Gotenberg image on Apple silicon in a built-in VM, or send requests to a Gotenberg API you already run.
 
 ![Thistle converting an Office document to PDF](images/thistle1.png)
 
@@ -13,6 +13,7 @@ One GUI instance. One CPU guest. A second launch brings the existing window forw
 - Mac with Apple silicon
 - macOS 26
 - Xcode 26 / Swift 6.2
+- Gotenberg 9 (built-in image or custom API)
 
 ## Install
 
@@ -36,7 +37,7 @@ If you point a **custom** engine URL at a LAN host, macOS may ask for Local Netw
 
 ## First start
 
-The first **Start Engine** downloads a Kata arm64 kernel, Apple's `vminit`, and `gotenberg/gotenberg:8` (Chromium, LibreOffice, and PDF engines). Later starts reuse `~/Library/Application Support/thistle/`. Chromium and LibreOffice auto-start so the first conversion is not a cold launch.
+The first **Start Engine** downloads a Kata arm64 kernel, Apple's `vminit`, and `gotenberg/gotenberg:9` (Chromium, LibreOffice, and the litho PDF engine). Later starts reuse `~/Library/Application Support/thistle/`. Chromium and LibreOffice auto-start so the first conversion is not a cold launch.
 
 ![Built-in VM engine status, guest URL, and log](images/thistle2.png)
 
@@ -46,7 +47,7 @@ The **Start Engine** control is a split button. The menu has **Restart**, **Refr
 
 The inspector has a **Built-in VM** toggle. Off uses a custom Gotenberg URL (for example `http://127.0.0.1:3000`) and stops the guest if it is running. Connect the URL, then conversions go to that API. Turning **Built-in VM** on again returns to the local engine; **Start Engine** then boots the guest.
 
-The inspector shows the running Gotenberg version for both built-in and custom engines. **Check for engine updates** checks the latest stable upstream release and links its release notes. When an update is available for the built-in engine, **Refresh Image** downloads it. Actions explain when a selected feature requires a newer engine. Custom servers without a version endpoint remain usable, with compatibility shown as unknown.
+The inspector shows the running Gotenberg version for both built-in and custom engines. **Check for engine updates** checks the latest stable upstream release and links its release notes. When an update is available for the built-in engine, **Refresh Image** downloads it. Connected engines below major 9 are blocked. Custom servers without a version endpoint remain usable.
 
 Custom servers support **None**, **Basic**, and **Bearer token** authentication. Enter a username and password or an existing bearer token, then **Connect** to apply and save it in macOS Keychain. Credentials are scoped to the API URL, kept out of settings and request logs, and used for health checks, version checks, and conversions. Editing the URL or authentication requires connecting again. Selecting **None** and connecting removes the saved credentials for that URL.
 
@@ -54,13 +55,21 @@ Custom servers support **None**, **Basic**, and **Bearer token** authentication.
 
 Pick an action in the sidebar, then run it in the same window:
 
-- **Chromium:** URL, HTML, or Markdown to PDF. URL, HTML, or Markdown screenshots.
-- **LibreOffice:** Office documents to PDF.
-- **PDF engines:** merge, split, flatten, optimize, PDF/A, encrypt, rotate, watermark, stamp, metadata, bookmarks, embed, Factur-X.
+- **Chromium:** URL, HTML, or Markdown to PDF. URL, HTML, or Markdown screenshots. PDF converts include an **After conversion** panel (merge, split, remediate, optimize, encrypt, metadata) encoded as Gotenberg `stages`.
+- **LibreOffice:** Office documents to PDF, with the same after-conversion stages.
+- **PDF:** merge, split, select, delete, insert, compose, flatten form, flatten transparency, convert colors, optimize, remediate (PDF/A, PDF/UA, Factur-X), validate, encrypt, decrypt, rotate, stamp, metadata, bookmarks, attach, detach, extract text/attachments, fill form, redact, autotag, sign, timestamp, render.
 
-JSON routes (read metadata, read bookmarks) show the result in the window. Binary routes keep the converted file and show an in-window preview. **Quick Look** opens a larger preview. **Show in Finder** and **Save As** stay available. After a successful run the form is hidden; **New** brings it back with the same files and options. Save As starts in the source file's folder when there is one, otherwise the last folder you used.
+JSON routes show the result in the window. Binary routes keep the converted file and show an in-window preview. Remediation responses surface residual and rolled-back counts when Gotenberg returns them. **Quick Look** opens a larger preview. **Show in Finder** and **Save As** stay available. After a successful run the form is hidden; **New** brings it back with the same files and options. Save As starts in the source file's folder when there is one, otherwise the last folder you used.
 
-**Stamp** and **Watermark** accept an ordered list of text, image, or PDF marks. Add, remove, or move marks up and down; each has its own page selection and options JSON. Image/PDF marks may reuse the same source file. Multiple marks require Gotenberg 8.36.0 or later; a single mark remains compatible with 8.28.0 and later.
+**Stamp** draws ordered text, image, or PDF marks over pages via `/forms/pdf/pipe`. Position is in points from the bottom-left of the page; fonts are the 14 standard PDF fonts (other scripts use installed fonts in the image).
+
+## Breaking changes in 1.0
+
+- Gotenberg 8 APIs are not supported. Built-in image is `gotenberg/gotenberg:9`.
+- PDF routes use `/forms/pdf/…` (not `/forms/pdfengines/…`).
+- Watermark is removed; use Stamp (always drawn over page content).
+- Metadata write uses the eight standard info fields, not arbitrary ExifTool tags.
+- Convert finishing is an explicit stages panel, not flat Gotenberg 8 post-process fields.
 
 ## Notes
 

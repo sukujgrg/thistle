@@ -10,16 +10,15 @@
     var files: [URL] = []
     var extraFiles: [String: [URL]] = [:]
     var values: [String: String] = [:]
-    var marks: [PDFMark] = []
+    var stamps: [PDFStamp] = []
+    var finishing: ConversionFinishing = .init()
 
     init(action: ConvertAction) {
       for field in action.fields {
         values[field.key] = field.defaultValue
       }
-      if let prefix = action.markPrefix {
-        var mark = PDFMark(text: prefix == "stamp" ? "APPROVED" : "CONFIDENTIAL")
-        mark.options = ##"{"scale":"1 abs","rot":"45","fillcolor":"#C00000","op":"0.35"}"##
-        marks = [mark]
+      if action.composer == .stamps {
+        stamps = [PDFStamp(text: "APPROVED")]
       }
     }
 
@@ -71,17 +70,50 @@
           return false
         }
       }
-      if action.id == "pdf-convert" {
-        let pdfuaOn = values["pdfua"] == "true"
-        if trimmed("pdfa").isEmpty && !pdfuaOn {
+      if action.id == "pdf-remediate" || action.id == "pdf-validate" {
+        if trimmed("profile").isEmpty {
           return false
         }
       }
-      if action.id == "pdf-metadata-write", !hasNonEmptyJSONObject("metadata") {
-        return false
+      if action.id == "pdf-remediate", trimmed("profile") == "Factur-X" {
+        if (extraFiles["xml"] ?? []).isEmpty {
+          return false
+        }
+      }
+      if action.id == "pdf-metadata-write" {
+        let keys = ["title", "author", "subject", "keywords", "creator", "producer", "creationDate", "modDate"]
+        if !keys.contains(where: { !trimmed($0).isEmpty }) {
+          return false
+        }
       }
       if action.id == "pdf-bookmarks-write", !hasNonEmptyJSONBookmarks("bookmarks") {
         return false
+      }
+      if action.id == "pdf-sign" {
+        if (extraFiles["certificate"] ?? []).isEmpty {
+          return false
+        }
+      }
+      if action.id == "pdf-timestamp", trimmed("url").isEmpty {
+        return false
+      }
+      if action.id == "pdf-detach", trimmed("name").isEmpty {
+        return false
+      }
+      if action.id == "pdf-insert" {
+        if (extraFiles["insert"] ?? []).isEmpty {
+          return false
+        }
+      }
+      if action.id == "pdf-split" {
+        let mode = trimmed("splitMode")
+        if mode == "intervals" {
+          guard let every = Int(trimmed("every")), every > 0 else { return false }
+        } else if mode == "pages" {
+          if splitRanges(from: trimmed("ranges")).isEmpty {
+            return false
+          }
+        }
       }
       for field in action.fields {
         if case .multiline = field.kind, !trimmed(field.key).isEmpty,
@@ -90,18 +122,12 @@
           return false
         }
       }
-      let splitMode = trimmed("splitMode")
-      if !splitMode.isEmpty && trimmed("splitSpan").isEmpty {
-        return false
-      }
-      if values["splitUnify"] == "true" {
-        if splitMode != "pages" {
+      if action.composer == .stamps {
+        if stamps.isEmpty || stamps.contains(where: { $0.validationMessage != nil }) {
           return false
         }
       }
-      if action.markPrefix != nil,
-        marks.isEmpty || marks.contains(where: { $0.validationMessage != nil })
-      {
+      if action.composer == .finishing, finishing.validationMessage != nil {
         return false
       }
       return true
@@ -117,11 +143,6 @@
       return try? JSONSerialization.jsonObject(with: data)
     }
 
-    private func hasNonEmptyJSONObject(_ key: String) -> Bool {
-      guard let object = jsonObject(key) as? [String: Any] else { return false }
-      return !object.isEmpty
-    }
-
     private func hasNonEmptyJSONBookmarks(_ key: String) -> Bool {
       guard let object = jsonObject(key) else { return false }
       if let list = object as? [Any] {
@@ -134,35 +155,50 @@
     }
 
     func extraSlots(for action: ConvertAction) -> [FileSlot] {
-      action.extraFiles
-    }
-
-    private func hasExtra(_ field: String) -> Bool {
-      !(extraFiles[field] ?? []).isEmpty
+      var slots = action.extraFiles
+      if action.id == "pdf-remediate", trimmed("profile") != "Factur-X" {
+        slots = slots.filter { $0.field != "xml" }
+      }
+      return slots
     }
 
     func fieldsToSend(_ action: ConvertAction) -> [MultipartField] {
+      switch action.composer {
+      case .stamps:
+        return encodeStages(stampStages(for: action))
+      case .finishing:
+        var out = baseFields(for: action)
+        out += encodeStages(finishing.stages)
+        return out
+      case .fields:
+        var out = baseFields(for: action)
+        if action.id == "pdf-attach" {
+          out += encodeStages(attachStages())
+        }
+        if action.id == "pdf-encrypt" {
+          out += encryptPermissionFields()
+        }
+        if action.id == "pdf-split" {
+          out = out.filter { $0.name != "every" && $0.name != "ranges" && $0.name != "splitMode" }
+          out += splitFields()
+        }
+        return out
+      }
+    }
+
+    private func baseFields(for action: ConvertAction) -> [MultipartField] {
       var out: [MultipartField] = []
       if action.urlField {
         out.append(MultipartField("url", url.trimmingCharacters(in: .whitespacesAndNewlines)))
       }
       for field in action.fields {
-        if shouldSkipSplitField(field) {
+        if action.id == "pdf-split", field.key == "every", trimmed("splitMode") != "intervals" {
           continue
         }
-        if shouldSkipEncryptField(field, action: action) {
+        if action.id == "pdf-split", field.key == "ranges", trimmed("splitMode") != "pages" {
           continue
         }
-        if shouldSkipFacturxField(field) {
-          continue
-        }
-        if field.key == "embedsMetadata", !hasExtra("embeds") {
-          continue
-        }
-        if shouldSkipRotateField(field, action: action) {
-          continue
-        }
-        if shouldSkipNativeWatermarkField(field) {
+        if action.id == "pdf-encrypt", encryptPermissionKeys.contains(field.key) {
           continue
         }
         let value = values[field.key] ?? field.defaultValue
@@ -183,27 +219,122 @@
           }
         }
       }
-      if let prefix = action.markPrefix {
-        out += marks.flatMap { $0.fields(prefix: prefix) }
+      if action.id == "pdf-remediate" {
+        out = out.filter { field in
+          if field.name == "level" || field.name == "documentType" {
+            return trimmed("profile") == "Factur-X"
+          }
+          return true
+        }
+        if trimmed("profile") == "Factur-X", let xml = extraFiles["xml"]?.first {
+          out.append(MultipartField("xml", xml.lastPathComponent))
+        }
+      }
+      if action.id == "pdf-sign", let cert = extraFiles["certificate"]?.first {
+        out.append(MultipartField("certificate", cert.lastPathComponent))
+        if let key = extraFiles["key"]?.first {
+          out.append(MultipartField("key", key.lastPathComponent))
+        }
+      }
+      if action.id == "pdf-insert", let insert = extraFiles["insert"]?.first {
+        out.append(MultipartField("source", insert.lastPathComponent))
       }
       return out
     }
 
-    func filesToSend(_ action: ConvertAction) -> [(field: String, url: URL)] {
-      var pairs: [(field: String, url: URL)] = []
+    private let encryptPermissionKeys: Set<String> = [
+      "print", "printHighQuality", "modifyContent", "extractText", "modifyAnnotations", "fillForms",
+      "assemble",
+    ]
+
+    private func encryptPermissionFields() -> [MultipartField] {
+      var options = EncryptOptions()
+      options.userPassword = trimmed("userPassword")
+      options.ownerPassword = trimmed("ownerPassword")
+      options.algorithm = trimmed("algorithm").isEmpty ? "aes256" : trimmed("algorithm")
+      options.print = values["print"] != "false"
+      options.printHighQuality = values["printHighQuality"] != "false"
+      options.modifyContent = values["modifyContent"] != "false"
+      options.extractText = values["extractText"] != "false"
+      options.modifyAnnotations = values["modifyAnnotations"] != "false"
+      options.fillForms = values["fillForms"] != "false"
+      options.assemble = values["assemble"] != "false"
+      guard let permissions = options.jsonObject()["permissions"],
+        JSONSerialization.isValidJSONObject(permissions)
+      else { return [] }
+      guard let json = try? JSONSerialization.data(withJSONObject: permissions, options: [.sortedKeys]),
+        let text = String(data: json, encoding: .utf8)
+      else { return [] }
+      return [MultipartField("permissions", text)]
+    }
+
+    private func splitFields() -> [MultipartField] {
+      let mode = trimmed("splitMode")
+      if mode == "intervals", let every = Int(trimmed("every")), every > 0 {
+        return [MultipartField("every", String(every))]
+      }
+      if mode == "pages" {
+        let ranges = splitRanges(from: trimmed("ranges"))
+        guard !ranges.isEmpty else { return [] }
+        guard let data = try? JSONSerialization.data(withJSONObject: ranges, options: [.sortedKeys]),
+          let text = String(data: data, encoding: .utf8)
+        else { return [] }
+        return [MultipartField("ranges", text)]
+      }
+      return []
+    }
+
+    private func splitRanges(from raw: String) -> [String] {
+      let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else { return [] }
+      if trimmed.hasPrefix("["), let data = trimmed.data(using: .utf8),
+        let array = try? JSONSerialization.jsonObject(with: data) as? [String]
+      {
+        return array.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+      }
+      return
+        trimmed
+        .split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    }
+
+    private func stampStages(for action: ConvertAction) -> [GotenbergStage] {
+      stamps.enumerated().map { index, stamp in
+        stamp.stage(assetFilename: stamp.assetFilename(index: index))
+      }
+    }
+
+    private func attachStages() -> [GotenbergStage] {
+      (extraFiles["attachments"] ?? []).map { .attach(file: $0.lastPathComponent) }
+    }
+
+    private func encodeStages(_ stages: [GotenbergStage]) -> [MultipartField] {
+      guard !stages.isEmpty, let json = try? GotenbergStage.encodeJSON(stages) else { return [] }
+      return [MultipartField("stages", json)]
+    }
+
+    func filesToSend(_ action: ConvertAction) -> [FormFileUpload] {
+      var pairs: [FormFileUpload] = []
       if action.files != nil {
         for file in files {
-          pairs.append((field: "files", url: file))
+          pairs.append(FormFileUpload(field: "files", url: file))
         }
       }
-      for slot in action.extraFiles {
+      for slot in extraSlots(for: action) {
         for file in extraFiles[slot.field] ?? [] {
-          pairs.append((field: slot.field, url: file))
+          // Gotenberg 9 names assets from the `files` upload by filename.
+          let underFiles = ["attachments", "certificate", "key", "xml", "insert"]
+            .contains(slot.field)
+          pairs.append(FormFileUpload(field: underFiles ? "files" : slot.field, url: file))
         }
       }
-      if let prefix = action.markPrefix {
-        for mark in marks where mark.source != .text {
-          for file in mark.files { pairs.append((field: prefix, url: file)) }
+      if action.composer == .stamps {
+        for (index, stamp) in stamps.enumerated() {
+          guard stamp.kind != .text, let asset = stamp.assetFilename(index: index),
+            let file = stamp.files.first
+          else { continue }
+          pairs.append(FormFileUpload(field: "files", url: file, filename: asset))
         }
       }
       return pairs
@@ -286,51 +417,6 @@
       name = name.trimmingCharacters(in: CharacterSet(charactersIn: " ."))
       guard !name.isEmpty, name != "." else { return nil }
       return name
-    }
-
-    private func shouldSkipSplitField(_ field: FormField) -> Bool {
-      let splitKeys: Set<String> = ["splitSpan", "splitUnify"]
-      guard splitKeys.contains(field.key) else { return false }
-      return trimmed("splitMode").isEmpty
-    }
-
-    private func shouldSkipEncryptField(_ field: FormField, action: ConvertAction) -> Bool {
-      let keys: Set<String> = [
-        "userPassword", "ownerPassword", "allowPrinting", "allowCopying", "allowModifying",
-        "allowAnnotating", "allowFillingForms", "allowAssembling",
-      ]
-      guard keys.contains(field.key) else { return false }
-      if action.id == "pdf-encrypt" {
-        return false
-      }
-      return trimmed("userPassword").isEmpty && trimmed("ownerPassword").isEmpty
-    }
-
-    private func shouldSkipFacturxField(_ field: FormField) -> Bool {
-      guard field.key.hasPrefix("facturx") else { return false }
-      if hasExtra("facturxXml") {
-        return false
-      }
-      return trimmed("facturxConformanceLevel").isEmpty
-        && trimmed("facturxDocumentType").isEmpty
-        && trimmed("facturxVersion").isEmpty
-    }
-
-    private func shouldSkipNativeWatermarkField(_ field: FormField) -> Bool {
-      let keys: Set<String> = [
-        "nativeWatermarkText", "nativeTiledWatermarkText", "nativeWatermarkColor",
-        "nativeWatermarkFontHeight", "nativeWatermarkRotateAngle", "nativeWatermarkFontName",
-      ]
-      guard keys.contains(field.key) else { return false }
-      return trimmed("nativeWatermarkText").isEmpty && trimmed("nativeTiledWatermarkText").isEmpty
-    }
-
-    private func shouldSkipRotateField(_ field: FormField, action: ConvertAction) -> Bool {
-      guard field.key == "rotateAngle" || field.key == "rotatePages" else { return false }
-      if action.id == "pdf-rotate" {
-        return false
-      }
-      return trimmed("rotateAngle").isEmpty
     }
 
   }

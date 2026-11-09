@@ -182,7 +182,7 @@
           Text(error).font(.caption).foregroundStyle(.orange)
         }
         if controller.isRunning, controller.gotenbergVersion == nil {
-          Text("The server did not provide a version. Feature compatibility could not be checked.")
+          Text("The server did not provide a version. Thistle 1.0 expects Gotenberg 9.")
             .font(.caption).foregroundStyle(.secondary)
         }
       }

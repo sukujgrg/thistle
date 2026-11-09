@@ -1,61 +1,16 @@
 import Foundation
 
-public enum GotenbergCompatibility {
-  public static func minimumVersion(forField name: String) -> String? {
-    switch name {
-    case "optimizeImages", "imageQuality", "selector", "titleBookmarks": "8.36.0"
-    case "ownerPassword", "allowPrinting", "allowCopying", "allowModifying", "allowAnnotating",
-      "allowFillingForms", "allowAssembling", "facturxConformanceLevel", "facturxDocumentType",
-      "facturxVersion":
-      "8.34.0"
-    case "deviceScaleFactor": "8.33.0"
-    case "skipNetworkAlmostIdleEvent", "initialView", "initialPage", "magnification", "zoom",
-      "pageLayout", "firstPageOnLeft", "resizeWindowToInitialPage", "centerWindow",
-      "openInFullScreenMode", "displayPDFDocumentTitle", "hideViewerMenubar", "hideViewerToolbar",
-      "hideViewerWindowControls", "useTransitionEffects", "openBookmarkLevels":
-      "8.29.0"
-    case "rotateAngle", "rotatePages", "autoIndexBookmarks": "8.28.0"
-    case let key
-    where key.hasPrefix("watermark") || key.hasPrefix("stamp") || key.hasPrefix("nativeWatermark")
-      || key == "nativeTiledWatermarkText":
-      "8.28.0"
-    case "emulatedMediaFeatures": "8.27.0"
-    case "waitForSelector", "ignoreResourceHttpStatusDomains": "8.26.0"
-    case "userPassword", "embedsMetadata": "8.25.0"
-    default: nil
-    }
-  }
+/// Thistle 1.0 speaks Gotenberg 9 only.
+public enum GotenbergRequirement {
+  public static let minimumMajor = 9
 
-  public static func minimumVersion(forRoute path: String) -> String? {
-    switch path {
-    case "/forms/pdfengines/optimize": "8.36.0"
-    case "/forms/pdfengines/factur-x": "8.34.0"
-    case "/forms/pdfengines/rotate", "/forms/pdfengines/watermark", "/forms/pdfengines/stamp",
-      "/forms/pdfengines/bookmarks/read", "/forms/pdfengines/bookmarks/write":
-      "8.28.0"
-    case "/forms/pdfengines/encrypt", "/forms/pdfengines/embed": "8.25.0"
-    default: nil
-    }
-  }
-
-  public static func issue(version: String?, path: String, fields: [MultipartField]) -> String? {
+  /// When the engine reports a parseable version, reject anything below major 9.
+  /// Unknown / unparseable versions stay allowed so custom builds without `/version` still work.
+  public static func issue(version: String?) -> String? {
     guard let version, let current = AppVersionModel(version) else { return nil }
-    if let minimum = minimumVersion(forRoute: path), current < AppVersionModel(minimum)! {
-      return "This action requires Gotenberg \(minimum) or later. Connected engine: \(version)."
-    }
-    for field in fields {
-      if let minimum = minimumVersion(forField: field.name), current < AppVersionModel(minimum)! {
-        return "\(field.name) requires Gotenberg \(minimum) or later. Connected engine: \(version)."
-      }
-    }
-    for prefix in ["watermark", "stamp"]
-    where fields.filter({ $0.name == "\(prefix)Source" }).count > 1 {
-      if current < AppVersionModel("8.36.0")! {
-        return
-          "Multiple \(prefix)s require Gotenberg 8.36.0 or later. Connected engine: \(version)."
-      }
-    }
-    return nil
+    guard current.major < minimumMajor else { return nil }
+    return
+      "Thistle 1.0 requires Gotenberg \(minimumMajor) or later. Connected engine: \(version)."
   }
 }
 

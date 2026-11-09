@@ -29,10 +29,13 @@
             if showsComposer {
               inputSection
               extraFilesSection
-              if let prefix = action.markPrefix {
-                PDFMarkEditor(prefix: prefix, marks: $form.marks, enabled: !controller.isWorking)
+              if action.composer == .stamps {
+                PDFStampEditor(stamps: $form.stamps, enabled: !controller.isWorking)
               }
               optionsSection
+              if action.composer == .finishing {
+                FinishingEditor(finishing: $form.finishing, enabled: !controller.isWorking)
+              }
               runSection
                 .id("result")
             } else {
@@ -147,7 +150,7 @@
     }
 
     private static let collapsibleSections: Set<String> = [
-      "Wait", "Request", "Export", "Viewer", "Encryption", "Native watermark",
+      "Wait", "Request", "Export", "Viewer", "Watermark", "Images",
     ]
 
     // Encryption is optional on convert/merge/split. On Encrypt it is the job.
@@ -516,10 +519,7 @@
     }
 
     private func fieldHelp(_ field: FormField) -> String {
-      guard let minimum = GotenbergCompatibility.minimumVersion(forField: field.key) else {
-        return field.help
-      }
-      return field.help + " Requires Gotenberg \(minimum) or later."
+      field.help
     }
 
     private func pickerOptionTitle(_ option: String, field: FormField) -> String {
@@ -529,24 +529,24 @@
       switch field.key {
       case "initialView":
         return [
-          "0": "None",
-          "1": "Outlines",
-          "2": "Thumbnails",
+          "default": "Default",
+          "outline": "Outline",
+          "thumbnails": "Thumbnails",
         ][option] ?? option
       case "magnification":
         return [
-          "0": "Default",
-          "1": "Fit page",
-          "2": "Fit width",
-          "3": "Fit visible",
-          "4": "Use zoom",
+          "default": "Default",
+          "fitWindow": "Fit window",
+          "fitWidth": "Fit width",
+          "fitVisible": "Fit visible",
+          "zoom": "Zoom",
         ][option] ?? option
       case "pageLayout":
         return [
-          "0": "Default",
-          "1": "Single page",
-          "2": "One column",
-          "3": "Two columns",
+          "default": "Default",
+          "singlePage": "Single page",
+          "oneColumn": "One column",
+          "twoColumnRight": "Two columns (right)",
         ][option] ?? option
       case "openBookmarkLevels":
         return option == "-1" ? "All" : option
@@ -612,8 +612,8 @@
 
     @ViewBuilder
     private var resultSection: some View {
-      if case .succeededFile(let path, let saved) = controller.jobStatus, isCurrentResult {
-        ResultCard(path: path, saved: saved) {
+      if case .succeededFile(let path, let saved, let note) = controller.jobStatus, isCurrentResult {
+        ResultCard(path: path, saved: saved, note: note) {
           controller.revealResult()
         } save: {
           Task { await controller.saveResult() }
@@ -627,7 +627,7 @@
           .foregroundStyle(.red)
           .textSelection(.enabled)
       }
-      if case .succeededJSON(let json) = controller.jobStatus, isCurrentResult {
+      if case .succeededJSON(let json, let note) = controller.jobStatus, isCurrentResult {
         VStack(alignment: .leading, spacing: 8) {
           HStack {
             Text("JSON")
@@ -640,6 +640,12 @@
             Button("New") {
               controller.beginEditingAfterResult()
             }
+          }
+          if let note {
+            Text(note)
+              .font(.callout)
+              .foregroundStyle(.secondary)
+              .accessibilityLabel("Remediation result")
           }
           JSONTextEditor(text: .constant(json), isEditable: false)
             .frame(minHeight: 180)
@@ -710,6 +716,7 @@
   private struct ResultCard: View {
     let path: String
     let saved: Bool
+    var note: String? = nil
     var reveal: () -> Void
     var save: () -> Void
     var startNew: () -> Void
@@ -738,6 +745,13 @@
               .textSelection(.enabled)
               .lineLimit(1)
               .help(path)
+            if let note {
+              Text(note)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Remediation result")
+            }
           }
           Spacer(minLength: 8)
           HStack(spacing: 8) {

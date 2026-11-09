@@ -6,7 +6,7 @@
   enum ActionGroup: String, CaseIterable, Identifiable {
     case chromium = "Chromium"
     case libreOffice = "LibreOffice"
-    case pdfEngines = "PDF Engines"
+    case pdf = "PDF"
 
     var id: String { rawValue }
   }
@@ -16,6 +16,7 @@
     case image
     case json
     case zipOrPdf
+    case zip
   }
 
   struct FormField: Identifiable, Hashable {
@@ -335,7 +336,7 @@
         return "'\(filename)' uses .markdown. This action needs a .md file."
       }
       if ConvertUTType.pdfExtensions.contains(ext), !allowed.contains("pdf") {
-        return "'\(filename)' is a PDF. Use Merge or another PDF Engine action."
+        return "'\(filename)' is a PDF. Use Merge or another PDF action."
       }
       if ConvertUTType.officeExtensions.contains(ext),
         allowed.isDisjoint(with: ConvertUTType.officeExtensions)
@@ -375,6 +376,12 @@
   }
 
   struct ConvertAction: Identifiable, Hashable {
+    enum Composer: Hashable {
+      case fields
+      case stamps
+      case finishing
+    }
+
     let id: String
     let title: String
     let subtitle: String
@@ -387,14 +394,7 @@
     let fields: [FormField]
     let output: ActionOutput
     let defaultFilename: String
-
-    var markPrefix: String? {
-      switch id {
-      case "pdf-watermark": "watermark"
-      case "pdf-stamp": "stamp"
-      default: nil
-      }
-    }
+    var composer: Composer = .fields
 
     var runTitle: String {
       switch output {
@@ -403,8 +403,8 @@
       case .image:
         "Capture"
       case .pdf:
-        group == .pdfEngines ? title : "Convert to PDF"
-      case .zipOrPdf:
+        group == .pdf ? title : "Convert to PDF"
+      case .zipOrPdf, .zip:
         title
       }
     }
@@ -414,10 +414,11 @@
       case .pdf, .zipOrPdf: "pdf"
       case .json: "json"
       case .image: nil
+      case .zip: "zip"
       }
     }
 
-    static let all: [ConvertAction] = chromium + libreOffice + pdfEngines
+    static let all: [ConvertAction] = chromium + libreOffice + pdfActions
 
     static func grouped() -> [(ActionGroup, [ConvertAction])] {
       ActionGroup.allCases.map { group in
@@ -479,7 +480,7 @@
     }
   }
 
-  private enum FieldHelp {
+  enum FieldHelp {
     struct Entry {
       var text: String
       var caption: Bool = false
@@ -498,7 +499,9 @@
       "printBackground": Entry(text: "Print CSS backgrounds and images."),
       "preferCssPageSize": Entry(
         text: "Use the CSS @page size instead of paper width and height.", caption: true),
-      "singlePage": Entry(text: "Fit the whole document on one PDF page."),
+      "singlePage": Entry(
+        text: "Chromium: fit the whole document on one page. LibreOffice: one page per sheet.",
+        caption: true),
       "scale": Entry(text: "Page render scale. 100% is Chromium's default."),
       "paperWidth": Entry(
         text:
@@ -509,15 +512,16 @@
       "marginBottom": Entry(text: "Bottom margin in inches."),
       "marginLeft": Entry(text: "Left margin in inches."),
       "marginRight": Entry(text: "Right margin in inches."),
-      "nativePageRanges": Entry(
+      "nativePages": Entry(
         text: "Pages to print, e.g. 1-5, 8, 11-13. Empty means every page.", caption: true),
-      "generateDocumentOutline": Entry(
-        text: "Embed a PDF outline from headings. Chromium also turns on tagged PDF.", caption: true
-      ),
-      "generateTaggedPdf": Entry(
+      "nativeBookmarks": Entry(
+        text: "Embed a PDF outline from headings.", caption: true),
+      "nativeTaggedPdf": Entry(
         text:
-          "Build an accessible tagged PDF in Chromium. Prefer this over PDF/UA for HTML and URL conversions.",
+          "Build an accessible tagged PDF in Chromium. Prefer this for HTML and URL conversions.",
         caption: true),
+      "paperSize": Entry(
+        text: "Named paper size. Custom width and height still apply when set.", caption: true),
       "omitBackground": Entry(
         text: "Hide the default white background so the PDF or image can be transparent."),
       "waitDelay": Entry(
@@ -529,7 +533,7 @@
       "waitForExpression": Entry(
         text: "JavaScript that must return true before print, e.g. window.status === 'ready'.",
         caption: true),
-      "waitWindowStatus": Entry(
+      "waitForWindowStatus": Entry(
         text: "Wait until window.status equals this string.", caption: true),
       "skipNetworkIdleEvent": Entry(
         text:
@@ -565,30 +569,34 @@
         text:
           "Light and Dark set prefers-color-scheme. Custom is a JSON array of CSS media feature objects.",
         caption: true),
-      "pdfa": Entry(
-        text: "Convert the result to a PDF/A archival profile. Empty leaves the PDF as written."),
-      "pdfua": Entry(
-        text: "LibreOffice post-process for PDF/UA. Slower. For Chromium, prefer Tagged PDF.",
+      "nativePdfa": Entry(
+        text: "LibreOffice writes PDF/A during export. Empty leaves standard PDF."),
+      "angle": Entry(text: "Clockwise rotation in degrees."),
+      "nativePdfua": Entry(
+        text: "LibreOffice writes PDF/UA-1 during export. Empty leaves standard PDF.",
         caption: true),
-      "optimizeImages": Entry(text: "Recompress images in the PDF to shrink the file."),
-      "imageQuality": Entry(
-        text: "JPEG quality from 1 to 100 when optimizing images. Higher is larger."),
+      "nativeQuality": Entry(text: "JPEG quality from 1 to 100 when exporting images."),
+      "nativeLosslessImageCompression": Entry(
+        text: "Export images as lossless PNG instead of JPEG."),
+      "nativeReduceImageResolution": Entry(text: "Downsample images to Max image DPI."),
+      "nativeMaxImageResolution": Entry(text: "Target DPI when Reduce image resolution is on."),
       "splitMode": Entry(
-        text: "intervals repeats every N pages. pages uses Span as a page list.", caption: true),
-      "splitSpan": Entry(
-        text: "With intervals, a count such as 1. With pages, a range such as 1-3.", caption: true),
-      "splitUnify": Entry(
-        text: "After splitting, merge the parts back into one PDF.", caption: true),
+        text: "intervals sends every N pages. pages sends a range list.", caption: true),
+      "every": Entry(text: "Split every N pages when Mode is intervals.", caption: true),
+      "ranges": Entry(
+        text: "Comma list or JSON array of page ranges when Mode is pages, e.g. 1-3,5.",
+        caption: true),
       "userPassword": Entry(
         text: "Password required to open the PDF. Leave empty for owner-only encryption."),
       "ownerPassword": Entry(
         text: "Password for changing permissions. One of the two passwords is required to encrypt."),
-      "allowPrinting": Entry(text: "Allow printing when the user password is used."),
-      "allowCopying": Entry(text: "Allow copying text and images."),
-      "allowModifying": Entry(text: "Allow changing page content."),
-      "allowAnnotating": Entry(text: "Allow comments and markup."),
-      "allowFillingForms": Entry(text: "Allow filling interactive form fields."),
-      "allowAssembling": Entry(
+      "print": Entry(text: "Allow printing when the user password is used."),
+      "printHighQuality": Entry(text: "Allow high-quality printing."),
+      "modifyContent": Entry(text: "Allow changing page content."),
+      "extractText": Entry(text: "Allow copying text and images."),
+      "modifyAnnotations": Entry(text: "Allow comments and markup."),
+      "fillForms": Entry(text: "Allow filling interactive form fields."),
+      "assemble": Entry(
         text: "Allow inserting, rotating, and deleting pages.", caption: true),
       "password": Entry(text: "Password for an encrypted office document."),
       "updateIndexes": Entry(
@@ -616,23 +624,15 @@
       "skipEmptyPages": Entry(text: "Writer only. Drop automatically inserted empty pages."),
       "addOriginalDocumentAsStream": Entry(
         text: "Embed the original office file inside the PDF for archiving.", caption: true),
-      "singlePageSheets": Entry(
-        text: "Put every spreadsheet sheet on exactly one page, including hidden sheets.",
-        caption: true),
-      "nativePdfFormats": Entry(
-        text:
-          "Let LibreOffice write PDF/A and PDF/UA itself. Off uses the PDF Engines pass, which also runs when you split or encrypt.",
-        caption: true),
       "initialView": Entry(
-        text: "What the PDF viewer shows on open: none, outline pane, or thumbnails."),
+        text: "What the PDF viewer shows on open: default, outline, or thumbnails."),
       "initialPage": Entry(text: "Page shown when the PDF opens."),
       "magnification": Entry(
-        text: "Open zoom. Use zoom applies the Zoom field.", caption: true),
+        text: "Open zoom. zoom applies the Zoom percent field.", caption: true),
       "zoom": Entry(text: "Open zoom percent. Used when Magnification is Use zoom."),
       "pageLayout": Entry(text: "Page layout when the PDF opens."),
       "openBookmarkLevels": Entry(
         text: "How many outline levels are expanded. All opens every level."),
-      "firstPageOnLeft": Entry(text: "With two-column layout, put page 1 on the left."),
       "resizeWindowToInitialPage": Entry(text: "Resize the viewer window to the first page."),
       "centerWindow": Entry(text: "Center the viewer window on screen."),
       "openInFullScreenMode": Entry(text: "Open the viewer full screen."),
@@ -644,45 +644,58 @@
       "nativeWatermarkText": Entry(text: "LibreOffice watermark drawn on every page."),
       "nativeTiledWatermarkText": Entry(text: "LibreOffice tiled watermark text."),
       "nativeWatermarkColor": Entry(
-        text: "Decimal RGB long. Default 8388223 is light green.", caption: true),
-      "nativeWatermarkFontHeight": Entry(text: "Watermark font size."),
-      "nativeWatermarkRotateAngle": Entry(
-        text: "Rotation in tenths of a degree. 450 is 45 degrees.", caption: true),
-      "nativeWatermarkFontName": Entry(text: "Watermark font. Default is Helvetica."),
-      "quality": Entry(text: "JPEG quality from 1 to 100. Higher is larger."),
-      "losslessImageCompression": Entry(text: "Export images as lossless PNG instead of JPEG."),
-      "reduceImageResolution": Entry(text: "Downsample images to Max image DPI."),
-      "maxImageResolution": Entry(text: "Target DPI when Reduce image resolution is on."),
-      "merge": Entry(text: "Combine every converted office file into one PDF."),
-      "flatten": Entry(
-        text: "Flatten annotations and form fields into page content.", caption: true),
-      "metadata": Entry(text: "JSON object of PDF info keys such as Title and Author."),
-      "bookmarks": Entry(text: "JSON array of outline entries with title and page. Children nest."),
-      "autoIndexBookmarks": Entry(
-        text: "Keep each input PDF's outline after merge, shifted to the new page numbers.",
-        caption: true),
-      "titleBookmarks": Entry(
-        text: "Nest each file's outline under a bookmark named after that file.", caption: true),
-      "rotateAngle": Entry(text: "Clockwise rotation in degrees."),
-      "rotatePages": Entry(
-        text: "Pages to rotate, e.g. 1-3. Empty rotates every page.", caption: true),
-      "watermarkSource": Entry(text: "Draw text, an image, or a PDF behind page content."),
-      "watermarkExpression": Entry(text: "Watermark text when Source is text."),
-      "watermarkPages": Entry(text: "Pages to mark, e.g. 1-3. Empty means every page."),
-      "watermarkOptions": Entry(
-        text: "QPDF overlay JSON. Common keys: scale, rot, fillcolor, op (opacity).", caption: true),
-      "stampSource": Entry(text: "Draw text, an image, or a PDF on top of page content."),
-      "stampExpression": Entry(text: "Stamp text when Source is text."),
-      "stampPages": Entry(text: "Pages to stamp, e.g. 1-3. Empty means every page."),
-      "stampOptions": Entry(
-        text: "QPDF overlay JSON. Common keys: scale, rot, fillcolor, op (opacity).", caption: true),
-      "embedsMetadata": Entry(
-        text: "JSON object keyed by attachment filename with mimeType and relationship.",
-        caption: true),
-      "facturxConformanceLevel": Entry(text: "Factur-X / ZUGFeRD profile written into the XMP."),
-      "facturxDocumentType": Entry(text: "Business document type stored in the XMP."),
-      "facturxVersion": Entry(text: "Factur-X specification version, e.g. 1.0."),
-      "format": Entry(text: "Screenshot image format."),
+        text: "Watermark color as #rrggbb hex.", caption: true),
+      "nativeWatermarkFontSize": Entry(text: "Watermark font size in points."),
+      "nativeWatermarkFont": Entry(text: "Watermark font name."),
+      "nativeWatermarkRotation": Entry(
+        text: "Watermark rotation in degrees.", caption: true),
+      "title": Entry(text: "Document title."),
+      "author": Entry(text: "Document author."),
+      "subject": Entry(text: "Document subject."),
+      "keywords": Entry(text: "Document keywords."),
+      "creator": Entry(text: "Creating application."),
+      "producer": Entry(text: "PDF producer."),
+      "creationDate": Entry(text: "Creation date string."),
+      "modDate": Entry(text: "Modification date string."),
+      "bookmarks": Entry(
+        text: "JSON array with title, pageNumber, and optional children.", caption: true),
+      "pages": Entry(
+        text: "Page list, e.g. 1-3,5. Empty often means every page.", caption: true),
+      "profile": Entry(text: "Remediation or validation profile."),
+      "language": Entry(text: "Document language for remediation, e.g. en."),
+      "aggressive": Entry(text: "Aggressive remediation fixes."),
+      "figureAltText": Entry(text: "Default alt text for figures during remediation."),
+      "level": Entry(text: "Factur-X conformance level."),
+      "documentType": Entry(text: "Factur-X business document type."),
+      "objectStreams": Entry(text: "Use object streams when optimizing."),
+      "dedup": Entry(text: "Remove duplicate objects when optimizing."),
+      "recompressImages": Entry(text: "Recompress images when optimizing."),
+      "subsetFonts": Entry(text: "Subset embedded fonts when optimizing."),
+      "algorithm": Entry(text: "Encryption algorithm. aes256 is recommended."),
+      "space": Entry(text: "Target color space: Gray, RGB, or CMYK."),
+      "regions": Entry(
+        text: "JSON array of redaction regions with page, x, y, width, height.", caption: true),
+      "fields": Entry(text: "JSON object of AcroForm field names to values."),
+      "placements": Entry(text: "JSON array of compose placements.", caption: true),
+      "dpi": Entry(text: "Render resolution in dots per inch."),
+      "format": Entry(text: "Render or screenshot image format."),
+      "invisible": Entry(text: "Include invisible text when extracting."),
+      "artifacts": Entry(text: "Include artifacts when extracting text."),
+      "annotations": Entry(text: "Include annotations when extracting text."),
+      "name": Entry(text: "Attachment name to detach or extract."),
+      "file": Entry(text: "Attachment filename on disk (for attach via pipe)."),
+      "at": Entry(
+        text: "Insert after this page. 0 inserts before the first page.", caption: true),
+      "sourcePages": Entry(
+        text: "Pages of the source PDF to insert, e.g. all or 1-3.", caption: true),
+      "url": Entry(text: "Timestamp authority URL."),
+      "reason": Entry(text: "Reason shown in the digital signature."),
+      "location": Entry(text: "Location shown in the digital signature."),
+      "certificatePassword": Entry(text: "Password that opens a PKCS#12 certificate."),
+      "pades": Entry(text: "Create a PAdES signature for eIDAS."),
+      "contactInfo": Entry(text: "Contact shown in the signature panel."),
+      "timestampUrl": Entry(text: "RFC 3161 timestamp authority for the signature."),
+      "certificate": Entry(text: "PKCS#12 or certificate file for signing."),
       "width": Entry(text: "Capture width and height in CSS pixels."),
       "height": Entry(text: "Capture height in CSS pixels."),
       "deviceScaleFactor": Entry(text: "Device pixel ratio. 2× is a Retina-density capture."),
@@ -692,7 +705,7 @@
     ]
   }
 
-  private func text(
+  func text(
     _ key: String, _ label: String, default defaultValue: String = "", section: String = "Options",
     placeholder: String = "", sendDefault: Bool = false
   ) -> FormField {
@@ -702,21 +715,23 @@
       showsCaption: FieldHelp.showsCaption(key))
   }
 
-  private func secure(_ key: String, _ label: String, section: String = "Options") -> FormField {
+  func secure(_ key: String, _ label: String, section: String = "Options") -> FormField {
     FormField(
       key: key, label: label, kind: .secure, defaultValue: "", section: section,
       help: FieldHelp.text(key), showsCaption: FieldHelp.showsCaption(key))
   }
 
-  private func toggle(
-    _ key: String, _ label: String, default defaultValue: Bool = false, section: String = "Options"
+  func toggle(
+    _ key: String, _ label: String, default defaultValue: Bool = false, section: String = "Options",
+    sendDefault: Bool = false
   ) -> FormField {
     FormField(
       key: key, label: label, kind: .toggle, defaultValue: defaultValue ? "true" : "false",
-      section: section, help: FieldHelp.text(key), showsCaption: FieldHelp.showsCaption(key))
+      section: section, sendDefault: sendDefault, help: FieldHelp.text(key),
+      showsCaption: FieldHelp.showsCaption(key))
   }
 
-  private func picker(
+  func picker(
     _ key: String, _ label: String, _ options: [String], default defaultValue: String,
     section: String = "Options", sendDefault: Bool = false
   ) -> FormField {
@@ -726,7 +741,7 @@
     )
   }
 
-  private func multiline(
+  func multiline(
     _ key: String, _ label: String, default defaultValue: String = "", section: String = "Options",
     placeholder: String = "", sendDefault: Bool = false
   ) -> FormField {
@@ -736,54 +751,99 @@
       showsCaption: FieldHelp.showsCaption(key))
   }
 
-  // Values from pkg/gotenberg/pdfengine.go. Bruno only listed *-b.
-  private let pdfaOptions = [
-    "", "PDF/A-1a", "PDF/A-1b", "PDF/A-2a", "PDF/A-2b", "PDF/A-2u", "PDF/A-3a", "PDF/A-3b",
-    "PDF/A-3u",
+  /// LibreOffice `nativePdfa` values (export-time only).
+  let pdfaOptions = [
+    "", "PDF/A-1b", "PDF/A-2b", "PDF/A-3b", "PDF/A-4",
   ]
 
-  private func pdfArchiveFields(section: String = "PDF") -> [FormField] {
+  /// litho `remediate` / `validate` profiles.
+  let remediateProfiles = [
+    "", "PDF/A-1a", "PDF/A-1b", "PDF/A-2a", "PDF/A-2b", "PDF/A-2u", "PDF/A-3a", "PDF/A-3b",
+    "PDF/A-3u", "PDF/A-4", "PDF/A-4e", "PDF/A-4f", "PDF/UA-1", "PDF/UA-2", "Factur-X",
+  ]
+
+  let paperSizeOptions = [
+    "", "Letter", "Legal", "Tabloid", "Ledger", "A4", "A3", "A5", "A6", "A2", "A1", "A0",
+  ]
+
+  let libreOfficeInitialView = ["default", "outline", "thumbnails"]
+  let libreOfficeMagnification = [
+    "default", "fitWindow", "fitWidth", "fitVisible", "zoom",
+  ]
+  let libreOfficePageLayout = [
+    "default", "singlePage", "oneColumn", "twoColumnRight",
+  ]
+
+  func pdfOptimizeRouteFields() -> [FormField] {
     [
-      picker("pdfa", "PDF/A", pdfaOptions, default: "", section: section),
-      toggle("pdfua", "PDF/UA", section: section),
+      toggle("objectStreams", "Object streams", default: true, sendDefault: true),
+      toggle("dedup", "Deduplicate", default: true, sendDefault: true),
+      toggle("recompressImages", "Recompress images", default: true, sendDefault: true),
+      toggle("subsetFonts", "Subset fonts", default: true, sendDefault: true),
     ]
   }
 
-  private func pdfOptimizeFields(section: String = "PDF") -> [FormField] {
-    [
-      toggle("optimizeImages", "Optimize images", section: section),
-      text("imageQuality", "Image quality", section: section, placeholder: "1-100"),
-    ]
-  }
-
-  private func pdfSplitFields(section: String = "Split") -> [FormField] {
-    [
-      picker("splitMode", "Split mode", ["", "intervals", "pages"], default: "", section: section),
-      text("splitSpan", "Split span", section: section, placeholder: "1 or 1-3"),
-      toggle("splitUnify", "Unify into one PDF", section: section),
-    ]
-  }
-
-  private func pdfEncryptFields(section: String = "Encryption") -> [FormField] {
+  func pdfEncryptFields(section: String = "Encryption") -> [FormField] {
     [
       secure("userPassword", "User password", section: section),
       secure("ownerPassword", "Owner password", section: section),
-      toggle("allowPrinting", "Allow printing", default: true, section: section),
-      toggle("allowCopying", "Allow copying", default: true, section: section),
-      toggle("allowModifying", "Allow modifying", default: true, section: section),
-      toggle("allowAnnotating", "Allow annotating", default: true, section: section),
-      toggle("allowFillingForms", "Allow filling forms", default: true, section: section),
-      toggle("allowAssembling", "Allow assembling", default: true, section: section),
+      picker("algorithm", "Algorithm", ["aes128", "aes256"], default: "aes256", section: section),
+      toggle("print", "Allow printing", default: true, section: section, sendDefault: true),
+      toggle(
+        "printHighQuality", "Allow print high quality", default: true, section: section,
+        sendDefault: true),
+      toggle("modifyContent", "Allow modify content", default: true, section: section),
+      toggle("extractText", "Allow extract text", default: true, section: section),
+      toggle("modifyAnnotations", "Allow modify annotations", default: true, section: section),
+      toggle("fillForms", "Allow fill forms", default: true, section: section),
+      toggle("assemble", "Allow assemble", default: true, section: section),
     ]
   }
 
+  func pdfMetadataWriteFields() -> [FormField] {
+    [
+      text("title", "Title", section: "Metadata"),
+      text("author", "Author", section: "Metadata"),
+      text("subject", "Subject", section: "Metadata"),
+      text("keywords", "Keywords", section: "Metadata"),
+      text("creator", "Creator", section: "Metadata"),
+      text("producer", "Producer", section: "Metadata"),
+      text("creationDate", "Creation date", section: "Metadata"),
+      text("modDate", "Modification date", section: "Metadata"),
+    ]
+  }
+
+  func remediateFields(includeProfile: Bool = true) -> [FormField] {
+    var fields: [FormField] = []
+    if includeProfile {
+      fields.append(
+        picker(
+          "profile", "Profile", remediateProfiles.filter { !$0.isEmpty }, default: "PDF/A-2b",
+          section: "Remediate", sendDefault: true))
+    }
+    fields += [
+      text("language", "Language", default: "en", section: "Remediate"),
+      toggle("aggressive", "Aggressive", section: "Remediate"),
+      text("figureAltText", "Figure alt text", section: "Remediate"),
+      picker(
+        "level", "Factur-X level",
+        ["MINIMUM", "BASIC WL", "BASIC", "EN 16931", "EXTENDED", "XRECHNUNG"],
+        default: "EN 16931", section: "Factur-X", sendDefault: true),
+      picker(
+        "documentType", "Document type",
+        ["INVOICE", "ORDER", "ORDER_RESPONSE", "ORDER_CHANGE"],
+        default: "INVOICE", section: "Factur-X", sendDefault: true),
+    ]
+    return fields
+  }
+
   // FormDataChromiumOptions in pkg/modules/chromium/routes.go.
-  private func chromiumWaitFields() -> [FormField] {
+  func chromiumWaitFields() -> [FormField] {
     [
       text("waitDelay", "Wait delay", section: "Wait", placeholder: "0s"),
       text("waitForSelector", "Wait for selector", section: "Wait"),
       text("waitForExpression", "Wait for expression", section: "Wait"),
-      text("waitWindowStatus", "Wait for window status", section: "Wait"),
+      text("waitForWindowStatus", "Wait for window status", section: "Wait"),
       toggle("skipNetworkIdleEvent", "Skip network idle", default: true, section: "Wait"),
       toggle(
         "skipNetworkAlmostIdleEvent", "Skip network almost idle", default: true, section: "Wait"),
@@ -801,7 +861,7 @@
     ]
   }
 
-  private func chromiumRequestFields(mediaTypeDefault: String = "") -> [FormField] {
+  func chromiumRequestFields(mediaTypeDefault: String = "") -> [FormField] {
     [
       text("userAgent", "User agent", section: "Request"),
       picker(
@@ -819,7 +879,7 @@
     ]
   }
 
-  private func pdfFiles(_ help: String, multiple: Bool = false, minimumCount: Int = 1) -> FileSlot {
+  func pdfFiles(_ help: String, multiple: Bool = false, minimumCount: Int = 1) -> FileSlot {
     FileSlot(
       field: "files",
       label: multiple ? "PDF files" : "PDF file",
@@ -845,7 +905,8 @@
         extraFiles: [],
         fields: chromiumPDFFields,
         output: .pdf,
-        defaultFilename: "page"
+        defaultFilename: "page",
+        composer: .finishing
       ),
       ConvertAction(
         id: "chromium-html-pdf",
@@ -866,7 +927,8 @@
         extraFiles: [],
         fields: chromiumPDFFields,
         output: .pdf,
-        defaultFilename: "document"
+        defaultFilename: "document",
+        composer: .finishing
       ),
       ConvertAction(
         id: "chromium-markdown-pdf",
@@ -887,7 +949,8 @@
         extraFiles: [],
         fields: chromiumPDFFields,
         output: .pdf,
-        defaultFilename: "markdown"
+        defaultFilename: "markdown",
+        composer: .finishing
       ),
       ConvertAction(
         id: "chromium-url-screenshot",
@@ -963,367 +1026,22 @@
             "Word, Excel, PowerPoint, OpenDocument, RTF, CSV. Not PDFs (Merge), HTML (HTML to PDF), or images.",
           extensions: ConvertUTType.officeExtensions),
         extraFiles: [],
-        fields: [
-          toggle("landscape", "Landscape", section: "Page"),
-          text(
-            "nativePageRanges", "Page ranges", section: "Page", placeholder: "1-3"),
-          secure("password", "Document password", section: "Page"),
-          toggle("updateIndexes", "Update indexes", default: true, section: "Export"),
-          toggle("exportBookmarks", "Export bookmarks", default: true, section: "Export"),
-          toggle(
-            "exportBookmarksToPdfDestination", "Export bookmarks as PDF destinations",
-            section: "Export"),
-          toggle("exportFormFields", "Export form fields", default: true, section: "Export"),
-          toggle("allowDuplicateFieldNames", "Allow duplicate field names", section: "Export"),
-          toggle("exportPlaceholders", "Export placeholders", section: "Export"),
-          toggle("exportNotes", "Export notes", section: "Export"),
-          toggle("exportNotesPages", "Export notes pages", section: "Export"),
-          toggle("exportOnlyNotesPages", "Export only notes pages", section: "Export"),
-          toggle("exportNotesInMargin", "Export notes in margin", section: "Export"),
-          toggle(
-            "convertOooTargetToPdfTarget", "Convert OOo targets to PDF targets", section: "Export"),
-          toggle("exportLinksRelativeFsys", "Export relative filesystem links", section: "Export"),
-          toggle("exportHiddenSlides", "Export hidden slides", section: "Export"),
-          toggle("skipEmptyPages", "Skip empty pages", section: "Export"),
-          toggle("addOriginalDocumentAsStream", "Add original as stream", section: "Export"),
-          toggle("singlePageSheets", "Single-page sheets", section: "Export"),
-          toggle("nativePdfFormats", "Native PDF formats", default: true, section: "Export"),
-          picker("initialView", "Initial view", ["0", "1", "2"], default: "0", section: "Viewer"),
-          text("initialPage", "Initial page", default: "1", section: "Viewer", placeholder: "1"),
-          picker(
-            "magnification", "Magnification", ["0", "1", "2", "3", "4"], default: "0",
-            section: "Viewer"),
-          text("zoom", "Zoom", default: "100", section: "Viewer", placeholder: "100"),
-          picker(
-            "pageLayout", "Page layout", ["0", "1", "2", "3"], default: "0", section: "Viewer"),
-          picker(
-            "openBookmarkLevels", "Open bookmark levels",
-            ["-1", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], default: "-1",
-            section: "Viewer"),
-          toggle("firstPageOnLeft", "First page on left", section: "Viewer"),
-          toggle("resizeWindowToInitialPage", "Resize window to initial page", section: "Viewer"),
-          toggle("centerWindow", "Center window", section: "Viewer"),
-          toggle("openInFullScreenMode", "Open in full screen", section: "Viewer"),
-          toggle("displayPDFDocumentTitle", "Display PDF title", default: true, section: "Viewer"),
-          toggle("hideViewerMenubar", "Hide viewer menu bar", section: "Viewer"),
-          toggle("hideViewerToolbar", "Hide viewer toolbar", section: "Viewer"),
-          toggle("hideViewerWindowControls", "Hide viewer window controls", section: "Viewer"),
-          toggle(
-            "useTransitionEffects", "Use transition effects", default: true, section: "Viewer"),
-          text("nativeWatermarkText", "Native watermark text", section: "Native watermark"),
-          text(
-            "nativeTiledWatermarkText", "Native tiled watermark text", section: "Native watermark"),
-          text("nativeWatermarkColor", "Native watermark color", section: "Native watermark"),
-          text(
-            "nativeWatermarkFontHeight", "Native watermark font height",
-            section: "Native watermark"),
-          text(
-            "nativeWatermarkRotateAngle", "Native watermark angle", section: "Native watermark"),
-          text("nativeWatermarkFontName", "Native watermark font", section: "Native watermark"),
-          text("quality", "JPEG quality", default: "90", section: "Images", placeholder: "1-100"),
-          toggle("losslessImageCompression", "Lossless images", section: "Images"),
-          toggle("reduceImageResolution", "Reduce image resolution", section: "Images"),
-          picker(
-            "maxImageResolution", "Max image DPI", ["75", "150", "300", "600", "1200"],
-            default: "300", section: "Images"),
-          toggle("merge", "Merge into one PDF", section: "PDF"),
-          toggle("flatten", "Flatten", section: "PDF"),
-          multiline(
-            "metadata", "Metadata JSON", section: "PDF",
-            placeholder: #"{"Title":"","Author":""}"#),
-        ] + pdfArchiveFields() + pdfOptimizeFields() + pdfSplitFields() + pdfEncryptFields(),
+        fields: libreOfficeExportFields,
         output: .pdf,
-        defaultFilename: "office"
-      )
-    ]
-
-    fileprivate static let pdfEngines: [ConvertAction] = [
-      ConvertAction(
-        id: "pdf-merge",
-        title: "Merge",
-        subtitle: "Combine PDFs in order",
-        icon: "square.on.square",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/merge",
-        urlField: false,
-        files: pdfFiles(
-          "Select two or more PDFs. Order is the merge order. Not office documents or images.",
-          multiple: true, minimumCount: 2),
-        extraFiles: [],
-        fields: [
-          toggle("flatten", "Flatten", section: "PDF"),
-          toggle("autoIndexBookmarks", "Index bookmarks from files", section: "PDF"),
-          toggle("titleBookmarks", "Title bookmarks", section: "PDF"),
-          multiline(
-            "metadata", "Metadata JSON", section: "PDF",
-            placeholder: #"{"Title":"","Author":""}"#),
-          multiline(
-            "bookmarks", "Bookmarks JSON", section: "PDF",
-            placeholder: #"[{"title":"Page 1","page":1}]"#),
-        ] + pdfArchiveFields() + pdfOptimizeFields() + pdfEncryptFields(),
-        output: .pdf,
-        defaultFilename: "merged"
-      ),
-      ConvertAction(
-        id: "pdf-split",
-        title: "Split",
-        subtitle: "Split by intervals or page ranges",
-        icon: "square.split.2x1",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/split",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [
-          picker(
-            "splitMode", "Mode", ["intervals", "pages"], default: "intervals", section: "Split",
-            sendDefault: true),
-          text(
-            "splitSpan", "Span", default: "1", section: "Split", placeholder: "1 or 1-3",
-            sendDefault: true),
-          toggle("splitUnify", "Unify into one PDF", section: "Split"),
-          toggle("flatten", "Flatten", section: "PDF"),
-        ] + pdfArchiveFields() + pdfOptimizeFields() + pdfEncryptFields(),
-        output: .zipOrPdf,
-        defaultFilename: "split"
-      ),
-      ConvertAction(
-        id: "pdf-flatten",
-        title: "Flatten",
-        subtitle: "Flatten annotations and forms",
-        icon: "rectangle.compress.vertical",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/flatten",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [],
-        output: .pdf,
-        defaultFilename: "flattened"
-      ),
-      ConvertAction(
-        id: "pdf-optimize",
-        title: "Optimize",
-        subtitle: "Compress embedded images",
-        icon: "speedometer",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/optimize",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [
-          text(
-            "imageQuality", "Image quality", default: "80", placeholder: "1-100", sendDefault: true)
-        ],
-        output: .pdf,
-        defaultFilename: "optimized"
-      ),
-      ConvertAction(
-        id: "pdf-convert",
-        title: "PDF/A and PDF/UA",
-        subtitle: "Convert to an archival PDF",
-        icon: "checkmark.seal",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/convert",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [
-          picker(
-            "pdfa", "PDF/A", pdfaOptions, default: "PDF/A-2b", section: "PDF", sendDefault: true),
-          toggle("pdfua", "PDF/UA", section: "PDF"),
-        ],
-        output: .pdf,
-        defaultFilename: "pdfa"
-      ),
-      ConvertAction(
-        id: "pdf-encrypt",
-        title: "Encrypt",
-        subtitle: "Password-protect a PDF",
-        icon: "lock",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/encrypt",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: pdfEncryptFields(),
-        output: .pdf,
-        defaultFilename: "encrypted"
-      ),
-      ConvertAction(
-        id: "pdf-rotate",
-        title: "Rotate",
-        subtitle: "Rotate pages 90, 180, or 270 degrees",
-        icon: "rotate.right",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/rotate",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [
-          picker("rotateAngle", "Angle", ["90", "180", "270"], default: "90", sendDefault: true),
-          text("rotatePages", "Pages", default: ""),
-        ],
-        output: .pdf,
-        defaultFilename: "rotated"
-      ),
-      ConvertAction(
-        id: "pdf-watermark",
-        title: "Watermark",
-        subtitle: "Draws behind page content and is often hidden. Use Stamp to overlay.",
-        icon: "drop",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/watermark",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [],
-        output: .pdf,
-        defaultFilename: "watermarked"
-      ),
-      ConvertAction(
-        id: "pdf-stamp",
-        title: "Stamp",
-        subtitle: "Draw on top of page content",
-        icon: "seal",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/stamp",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [],
-        output: .pdf,
-        defaultFilename: "stamped"
-      ),
-      ConvertAction(
-        id: "pdf-metadata-read",
-        title: "Read metadata",
-        subtitle: "Return PDF metadata as JSON",
-        icon: "info.circle",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/metadata/read",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [],
-        output: .json,
-        defaultFilename: "metadata"
-      ),
-      ConvertAction(
-        id: "pdf-metadata-write",
-        title: "Write metadata",
-        subtitle: "Set title, author, and more",
-        icon: "pencil.and.list.clipboard",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/metadata/write",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [
-          multiline(
-            "metadata", "Metadata JSON", default: #"{"Title":"","Author":""}"#, sendDefault: true)
-        ],
-        output: .pdf,
-        defaultFilename: "metadata"
-      ),
-      ConvertAction(
-        id: "pdf-bookmarks-read",
-        title: "Read bookmarks",
-        subtitle: "Return the outline as JSON",
-        icon: "bookmark",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/bookmarks/read",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [],
-        output: .json,
-        defaultFilename: "bookmarks"
-      ),
-      ConvertAction(
-        id: "pdf-bookmarks-write",
-        title: "Write bookmarks",
-        subtitle: "Replace the document outline",
-        icon: "bookmark.fill",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/bookmarks/write",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [],
-        fields: [
-          multiline(
-            "bookmarks", "Bookmarks JSON", default: #"[{"title":"Chapter 1","page":1}]"#,
-            sendDefault: true)
-        ],
-        output: .pdf,
-        defaultFilename: "bookmarks"
-      ),
-      ConvertAction(
-        id: "pdf-embed",
-        title: "Embed files",
-        subtitle: "Attach files to a PDF",
-        icon: "paperclip",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/embed",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [
-          FileSlot(
-            field: "embeds", label: "Attachments", types: ConvertUTType.any, allowsMultiple: true,
-            help: "Any file to attach. The PDF above is the host document.", minimumCount: 1,
-            required: true)
-        ],
-        fields: [
-          multiline(
-            "embedsMetadata", "Embeds metadata JSON",
-            placeholder:
-              #"{"file.xml":{"mimeType":"text/xml","relationship":"Data"}}"#)
-        ],
-        output: .pdf,
-        defaultFilename: "embedded"
-      ),
-      ConvertAction(
-        id: "pdf-facturx",
-        title: "Factur-X",
-        subtitle: "Inject Factur-X / ZUGFeRD XMP",
-        icon: "building.columns",
-        group: .pdfEngines,
-        path: "/forms/pdfengines/factur-x",
-        urlField: false,
-        files: pdfFiles("Select one PDF."),
-        extraFiles: [
-          FileSlot(
-            field: "facturxXml", label: "Invoice XML",
-            types: ConvertUTType.xml, allowsMultiple: false,
-            help: "CII invoice XML. Not a PDF.", minimumCount: 1, required: true,
-            extensions: ConvertUTType.xmlExtensions)
-        ],
-        fields: [
-          picker(
-            "facturxConformanceLevel", "Conformance",
-            ["MINIMUM", "BASIC WL", "BASIC", "EN 16931", "EXTENDED", "XRECHNUNG"],
-            default: "EN 16931", sendDefault: true),
-          picker(
-            "facturxDocumentType", "Document type",
-            ["INVOICE", "ORDER", "ORDER_RESPONSE", "ORDER_CHANGE"], default: "INVOICE",
-            sendDefault: true),
-          text("facturxVersion", "Version", default: "1.0", sendDefault: true),
-        ],
-        output: .pdf,
-        defaultFilename: "factur-x"
+        defaultFilename: "office",
+        composer: .finishing
       ),
     ]
   }
 
-  // FormDataChromiumPdfOptions plus FormDataPdf* helpers used by the convert
-  // routes. Watermark, stamp, Factur-X, embeds, and rotate are separate actions.
-  private let chromiumPDFFields: [FormField] =
+  let chromiumPDFFields: [FormField] =
     [
       toggle("landscape", "Landscape", section: "Page"),
       toggle("printBackground", "Print background", section: "Page"),
       toggle("preferCssPageSize", "Prefer CSS page size", section: "Page"),
       toggle("singlePage", "Single page", section: "Page"),
       text("scale", "Scale", default: "1.0", section: "Page", placeholder: "1.0"),
+      picker("paperSize", "Paper size", paperSizeOptions, default: "", section: "Page"),
       text("paperWidth", "Paper width (in)", default: "8.5", section: "Page", placeholder: "8.5"),
       text("paperHeight", "Paper height (in)", default: "11", section: "Page", placeholder: "11"),
       text("marginTop", "Margin top (in)", default: "0.39", section: "Page", placeholder: "0.39"),
@@ -1332,24 +1050,18 @@
       text("marginLeft", "Margin left (in)", default: "0.39", section: "Page", placeholder: "0.39"),
       text(
         "marginRight", "Margin right (in)", default: "0.39", section: "Page", placeholder: "0.39"),
-      text("nativePageRanges", "Page ranges", section: "Page"),
-      toggle("generateDocumentOutline", "Document outline", section: "Page"),
-      toggle("generateTaggedPdf", "Tagged PDF", section: "Page"),
+      text("nativePages", "Page ranges", section: "Page", placeholder: "1-3,5"),
+      toggle("nativeBookmarks", "PDF bookmarks", section: "Page"),
+      toggle("nativeTaggedPdf", "Tagged PDF", section: "Page"),
       toggle("omitBackground", "Omit background", section: "Page"),
-    ] + chromiumWaitFields() + chromiumRequestFields() + pdfArchiveFields() + pdfOptimizeFields()
-    + pdfSplitFields() + pdfEncryptFields() + [
-      multiline(
-        "metadata", "Metadata JSON", section: "PDF",
-        placeholder: #"{"Title":"","Author":""}"#)
-    ]
+    ] + chromiumWaitFields() + chromiumRequestFields()
 
-  // FormDataChromiumScreenshotOptions. No PDF finish fields.
-  private let chromiumScreenshotFields: [FormField] =
+  let chromiumScreenshotFields: [FormField] =
     [
       picker("format", "Format", ["png", "jpeg", "webp"], default: "png", section: "Capture"),
       text("width", "Width (px)", default: "800", section: "Capture", placeholder: "800"),
       text("height", "Height (px)", default: "600", section: "Capture", placeholder: "600"),
-      text("quality", "Quality", default: "100", section: "Capture", placeholder: "0-100"),
+      text("quality", "Quality", default: "100", section: "Capture", placeholder: "1-100"),
       text(
         "deviceScaleFactor", "Device scale", default: "1.0", section: "Capture", placeholder: "1.0"),
       toggle("clip", "Clip to dimensions", section: "Capture"),

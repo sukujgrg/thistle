@@ -268,6 +268,8 @@ public struct AppVersionModel: Comparable, Equatable, Sendable {
   public let displayValue: String
   private let components: [Int]
 
+  public var major: Int { components.first ?? 0 }
+
   public init?(_ rawValue: String) {
     let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
     let withoutPrefix =

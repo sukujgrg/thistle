@@ -25,32 +25,39 @@ public actor GotenbergClient {
     public let mimeType: String
     public let suggestedExtension: String
     public let jsonPreview: String?
+    public let remediation: RemediationReport?
 
     public nonisolated init(
-      data: Data, mimeType: String, suggestedExtension: String, jsonPreview: String?
+      data: Data, mimeType: String, suggestedExtension: String, jsonPreview: String?,
+      remediation: RemediationReport? = nil
     ) {
       self.data = data
       self.mimeType = mimeType
       self.suggestedExtension = suggestedExtension
       self.jsonPreview = jsonPreview
+      self.remediation = remediation
     }
 
     public var isJSON: Bool { jsonPreview != nil }
 
     public nonisolated func jobResult(jobID: String) throws -> JobResultDTO {
       if isJSON {
-        return JobResultDTO(jsonPreview: jsonPreview, suggestedExtension: suggestedExtension)
+        return JobResultDTO(
+          jsonPreview: jsonPreview, suggestedExtension: suggestedExtension,
+          remediationSummary: remediation?.summary)
       }
       let output = Paths.jobDirectory(jobID).appendingPathComponent("output.\(suggestedExtension)")
       try data.write(to: output, options: .atomic)
       return JobResultDTO(
         outputPath: output.path(percentEncoded: false),
-        suggestedExtension: suggestedExtension)
+        suggestedExtension: suggestedExtension,
+        remediationSummary: remediation?.summary)
     }
   }
 
   private static let secretFields: Set<String> = [
     "cookies", "extraHttpHeaders", "password", "userPassword", "ownerPassword",
+    "certificatePassword",
   ]
 
   private let dataLoader: @Sendable (URLRequest) async throws -> (Data, URLResponse)
@@ -189,12 +196,17 @@ public actor GotenbergClient {
 
     let mime = http.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
     let ext = OutputFile.suggestedExtension(mime: mime, data: data)
+    let remediation = RemediationReport(http: http)
+    if let summary = remediation.summary {
+      trace?.add("  -> \(summary)")
+    }
     trace?.add("  -> HTTP \(http.statusCode) \(mime) \(data.count) bytes")
     return Response(
       data: data,
       mimeType: mime,
       suggestedExtension: ext,
-      jsonPreview: prettyJSON(data: data, mime: mime)
+      jsonPreview: prettyJSON(data: data, mime: mime),
+      remediation: remediation.summary == nil ? nil : remediation
     )
   }
 

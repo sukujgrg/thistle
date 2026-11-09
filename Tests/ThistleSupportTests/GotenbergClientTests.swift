@@ -14,17 +14,17 @@ struct GotenbergClientTests {
         request.value(forHTTPHeaderField: "Authorization") == "Basic dGVzdGVyOnBhc3M6d29yZA==")
       let url = try #require(request.url)
       #expect(url.path.hasPrefix("/api/"))
-      let body = url.lastPathComponent == "version" ? "8.37.0\n" : "{}"
+      let body = url.lastPathComponent == "version" ? "9.2.0\n" : "{}"
       return (
         Data(body.utf8),
         HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: [:])!
       )
     }
     try await client.checkHealth(baseURL: url, credentials: credentials)
-    #expect(try await client.version(baseURL: url, credentials: credentials) == "8.37.0")
+    #expect(try await client.version(baseURL: url, credentials: credentials) == "9.2.0")
     let trace = HTTPTrace()
     _ = try await client.submit(
-      baseURL: url, path: "/forms/pdfengines/stamp", fields: [], files: [],
+      baseURL: url, path: "/forms/pdf/pipe", fields: [], files: [],
       credentials: credentials, trace: trace)
     #expect(!trace.snapshot().joined().contains("pass:word"))
     #expect(!trace.snapshot().joined().contains("dGVzdGVy"))
@@ -74,7 +74,7 @@ struct GotenbergClientTests {
     let client = GotenbergClient { request in
       #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
       return (
-        Data("8.37.0".utf8),
+        Data("9.2.0".utf8),
         HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [:])!
       )
     }

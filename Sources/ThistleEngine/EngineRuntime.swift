@@ -183,9 +183,9 @@
       async throws -> JobResultDTO
     {
       let running = try await ensureEngine(forcePull: false)
-      if let issue = GotenbergCompatibility.issue(
-        version: gotenbergVersion, path: path, fields: fields)
-      {
+      _ = path
+      _ = fields
+      if let issue = GotenbergRequirement.issue(version: gotenbergVersion) {
         throw EngineError.operationFailed(
           issue + " Use Refresh Image to update the built-in engine.")
       }

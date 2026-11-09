@@ -21,8 +21,8 @@
     enum JobStatus: Equatable {
       case idle
       case working(String)
-      case succeededFile(path: String, saved: Bool)
-      case succeededJSON(String)
+      case succeededFile(path: String, saved: Bool, note: String? = nil)
+      case succeededJSON(String, note: String? = nil)
       case failed(String)
     }
 
@@ -87,12 +87,12 @@
     }
 
     var jsonPreview: String? {
-      if case .succeededJSON(let json) = jobStatus { return json }
+      if case .succeededJSON(let json, _) = jobStatus { return json }
       return nil
     }
 
     var resultSaved: Bool {
-      if case .succeededFile(_, let saved) = jobStatus { return saved }
+      if case .succeededFile(_, let saved, _) = jobStatus { return saved }
       return false
     }
 
@@ -370,7 +370,7 @@
     }
 
     func submit(
-      action: ConvertAction, fields: [MultipartField], files: [(field: String, url: URL)],
+      action: ConvertAction, fields: [MultipartField], files: [FormFileUpload],
       suggestedName: String, saveDirectory: URL? = nil
     ) async {
       discardUnsavedResult()
@@ -410,7 +410,7 @@
 
     private func submitRemote(
       jobID: String, action: ConvertAction, fields: [MultipartField],
-      files: [(field: String, url: URL)],
+      files: [FormFileUpload],
       suggestedName: String
     ) async throws {
       let url = try EngineSettings.parseURL(settings.remoteURL)
@@ -436,8 +436,9 @@
     }
 
     private func finishJob(result: JobResultDTO, jobID: String, suggestedName: String) throws {
+      let note = result.remediationSummary
       if let json = result.jsonPreview {
-        jobStatus = .succeededJSON(json)
+        jobStatus = .succeededJSON(json, note: note)
         isEditingAfterResult = false
         try? FileManager.default.removeItem(at: Paths.jobDirectory(jobID))
         return
@@ -451,7 +452,8 @@
         OutputFile.filename(basename: suggestedName, ext: result.suggestedExtension))
       try OutputFile.place(source, at: named, moving: true)
       unsavedJobDirectory = jobDirectory
-      jobStatus = .succeededFile(path: named.path(percentEncoded: false), saved: false)
+      jobStatus = .succeededFile(
+        path: named.path(percentEncoded: false), saved: false, note: note)
       isEditingAfterResult = false
     }
 
@@ -467,7 +469,7 @@
     }
 
     func saveResult() async {
-      guard case .succeededFile(let path, let saved) = jobStatus else { return }
+      guard case .succeededFile(let path, let saved, let note) = jobStatus else { return }
       let source = URL(fileURLWithPath: path)
       let ext = source.pathExtension.isEmpty ? "pdf" : source.pathExtension
       saveError = nil
@@ -484,7 +486,8 @@
         try OutputFile.place(source, at: output, moving: !saved)
         rememberSaveDirectory(output)
         let cleanup = !saved
-        jobStatus = .succeededFile(path: output.path(percentEncoded: false), saved: true)
+        jobStatus = .succeededFile(
+          path: output.path(percentEncoded: false), saved: true, note: note)
         if cleanup {
           discardUnsavedJobDirectoryKeepingResult()
         }
@@ -496,7 +499,7 @@
     func saveJSONPreview(defaultName: String) async {
       let fallback = defaultName.isEmpty ? "result" : defaultName
       let name = lastSuggestedName.isEmpty ? fallback : lastSuggestedName
-      guard case .succeededJSON(let json) = jobStatus,
+      guard case .succeededJSON(let json, let note) = jobStatus,
         let data = json.data(using: .utf8)
       else { return }
       saveError = nil
@@ -509,14 +512,15 @@
       do {
         try data.write(to: output, options: .atomic)
         rememberSaveDirectory(output)
-        jobStatus = .succeededFile(path: output.path(percentEncoded: false), saved: true)
+        jobStatus = .succeededFile(
+          path: output.path(percentEncoded: false), saved: true, note: note)
       } catch {
         saveError = error.localizedDescription
       }
     }
 
     func revealResult() {
-      guard case .succeededFile(let path, _) = jobStatus else { return }
+      guard case .succeededFile(let path, _, _) = jobStatus else { return }
       NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
@@ -600,13 +604,12 @@
     }
 
     func compatibilityIssue(action: ConvertAction, fields: [MultipartField]) -> String? {
-      guard
-        let issue = GotenbergCompatibility.issue(
-          version: gotenbergVersion, path: action.path, fields: fields)
-      else { return nil }
+      guard let issue = GotenbergRequirement.issue(version: gotenbergVersion) else { return nil }
+      _ = action
+      _ = fields
       return issue
         + (usesRemote
-          ? " Update the custom server to use this feature."
+          ? " Update the custom server to Gotenberg 9 or later."
           : " Use Refresh Image to update the built-in engine.")
     }
 
@@ -691,7 +694,7 @@
 
     static func stageFiles(
       jobID: String, action: ConvertAction, fields: [MultipartField],
-      files: [(field: String, url: URL)]
+      files: [FormFileUpload]
     ) throws -> [FileRefDTO] {
       let root = Paths.jobDirectory(jobID)
       try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -699,7 +702,8 @@
       // Prefix those jobs so picker order is merge order. Chromium, embeds,
       // and other name-sensitive routes need the literal original name.
       let preservePickerOrder =
-        action.id == "pdf-merge" || fields.firstValue(for: "merge") == "true"
+        action.id == "pdf-merge"
+        || (action.id == "libreoffice-convert" && files.count > 1)
       let orderWidth = max(1, String(max(0, files.count - 1)).count)
       var usedNames: Set<String> = []
       var refs: [FileRefDTO] = []
@@ -716,13 +720,14 @@
         }
         let original = pair.url.lastPathComponent
         let order = String(format: "%0\(orderWidth)d", index)
-        // Marks are consumed in upload order and may reuse the same source file.
-        // Give them unique names even on engines predating duplicate-name support.
-        let isMark = pair.field == "stamp" || pair.field == "watermark"
-        let filename =
-          isMark
-          ? "\(pair.field)-\(UUID().uuidString).\(pair.url.pathExtension)"
-          : (preservePickerOrder ? "\(order)-\(original)" : original)
+        let filename: String
+        if let override = pair.filename {
+          filename = override
+        } else if preservePickerOrder {
+          filename = "\(order)-\(original)"
+        } else {
+          filename = original
+        }
         if !usedNames.insert(filename).inserted {
           throw EngineError.stagingFailed(
             "Two files are named '\(filename)'. Gotenberg looks files up by name; rename one of them."
@@ -738,7 +743,7 @@
     }
 
     private func discardUnsavedResult() {
-      guard case .succeededFile(_, false) = jobStatus, let unsavedJobDirectory else {
+      guard case .succeededFile(_, false, _) = jobStatus, let unsavedJobDirectory else {
         self.unsavedJobDirectory = nil
         return
       }
@@ -749,7 +754,7 @@
     private func discardUnsavedJobDirectoryKeepingResult() {
       guard let unsavedJobDirectory else { return }
       defer { self.unsavedJobDirectory = nil }
-      if case .succeededFile(let path, _) = jobStatus {
+      if case .succeededFile(let path, _, _) = jobStatus {
         let resultPath = URL(fileURLWithPath: path).standardizedFileURL.path(percentEncoded: false)
         let root = unsavedJobDirectory.standardizedFileURL.path(percentEncoded: false)
         if resultPath == root || resultPath.hasPrefix(root + "/") {
@@ -768,7 +773,7 @@
     }
 
     private func defaultSaveDirectory() -> URL? {
-      if case .succeededFile(let path, true) = jobStatus {
+      if case .succeededFile(let path, true, _) = jobStatus {
         return URL(fileURLWithPath: path).deletingLastPathComponent()
       }
       for candidate in [suggestedSaveDirectory, lastSaveDirectory] {

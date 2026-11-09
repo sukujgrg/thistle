@@ -28,19 +28,20 @@
       controller.remoteURLText = "https://engine.example/api"
       controller.remoteCredentials = RemoteCredentials(
         authentication: .basic, username: "example", secret: "test-password")
-      controller.gotenbergVersion = "8.37.0"
+      controller.gotenbergVersion = "9.2.0"
       try render(
         EngineInspectorView().environment(controller).frame(width: 850),
         to: output.appendingPathComponent("remote-auth.png"))
-      var image = PDFMark()
-      image.source = .image
+      var image = PDFStamp(text: "")
+      image.kind = .image
       image.files = [URL(fileURLWithPath: "/tmp/logo.png")]
-      let first = PDFMark(text: "CONFIDENTIAL")
-      var last = PDFMark(text: "DRAFT")
+      let first = PDFStamp(text: "CONFIDENTIAL")
+      var last = PDFStamp(text: "DRAFT")
       last.pages = "2-3"
-      last.options = #"{"op":"0.35","rot":"45"}"#
+      last.opacity = "0.35"
+      last.rotation = "45"
       try render(
-        PDFMarkEditor(prefix: "stamp", marks: .constant([first, image, last]), enabled: true)
+        PDFStampEditor(stamps: .constant([first, image, last]), enabled: true)
           .padding(24).frame(width: 750), to: output.appendingPathComponent("multiple-stamps.png"))
     }
 

@@ -6,55 +6,60 @@
 
   @MainActor
   struct MarkFormTests {
-    @Test func mixedMarksKeepFieldsAndFilesInOrder() throws {
+    @Test func mixedStampsEncodeOrderedStagesAndFiles() throws {
       let action = try #require(ConvertAction.all.first { $0.id == "pdf-stamp" })
       var form = ActionForm(action: action)
       form.files = [URL(fileURLWithPath: "/tmp/input.pdf")]
-      var image = PDFMark(text: "")
-      image.source = .image
+      var image = PDFStamp(text: "")
+      image.kind = .image
       image.files = [URL(fileURLWithPath: "/tmp/logo.png")]
-      var pdf = PDFMark(text: "")
-      pdf.source = .pdf
+      var pdf = PDFStamp(text: "")
+      pdf.kind = .pdf
       pdf.files = [URL(fileURLWithPath: "/tmp/overlay.pdf")]
-      form.marks = [PDFMark(text: "DRAFT"), image, PDFMark(text: "LAST"), pdf]
+      form.stamps = [PDFStamp(text: "DRAFT"), image, PDFStamp(text: "LAST"), pdf]
+
       let fields = form.fieldsToSend(action)
-      #expect(
-        fields.filter { $0.name == "stampSource" }.map(\.value) == ["text", "image", "text", "pdf"])
-      #expect(
-        fields.filter { $0.name == "stampExpression" }.map(\.value) == ["DRAFT", "", "LAST", ""])
-      #expect(fields.filter { $0.name == "stampPages" }.map(\.value) == ["", "", "", ""])
-      #expect(
-        form.filesToSend(action).map(\.url.lastPathComponent) == [
-          "input.pdf", "logo.png", "overlay.pdf",
-        ])
-      form.marks.swapAt(0, 3)
-      #expect(
-        form.fieldsToSend(action).filter { $0.name == "stampSource" }.map(\.value) == [
-          "pdf", "image", "text", "text",
-        ])
-      #expect(
-        form.filesToSend(action).map(\.url.lastPathComponent) == [
-          "input.pdf", "overlay.pdf", "logo.png",
-        ])
+      let stages = try #require(fields.firstValue(for: "stages"))
+      #expect(stages.contains(#""op":"stamp-text""#))
+      #expect(stages.contains(#""op":"stamp-image""#))
+      #expect(stages.contains(#""op":"stamp-pdf""#))
+      #expect(stages.contains("DRAFT"))
+      #expect(stages.contains("LAST"))
+
+      let uploads = form.filesToSend(action)
+      #expect(uploads.map(\.field) == ["files", "files", "files"])
+      #expect(uploads.map(\.filename) == [nil, "stamp-1.png", "stamp-3.pdf"])
+      #expect(uploads.map(\.url.lastPathComponent) == ["input.pdf", "logo.png", "overlay.pdf"])
     }
 
-    @Test func invalidMarkPreventsSubmission() throws {
-      let action = try #require(ConvertAction.all.first { $0.id == "pdf-watermark" })
+    @Test func invalidStampPreventsSubmission() throws {
+      let action = try #require(ConvertAction.all.first { $0.id == "pdf-stamp" })
       var form = ActionForm(action: action)
       form.files = [URL(fileURLWithPath: "/tmp/input.pdf")]
       #expect(form.canSubmit(action))
-      form.marks.append(PDFMark())
+      form.stamps.append(PDFStamp(text: ""))
       #expect(!form.canSubmit(action))
-      form.marks[1].text = "DRAFT"
-      form.marks[1].options = #"{"opacity":0.5}"#
-      #expect(!form.canSubmit(action))
-      form.marks[1].options = #"{"op":"0.5"}"#
+      form.stamps[1].text = "DRAFT"
       #expect(form.canSubmit(action))
-      form.marks[1].source = .image
+      form.stamps[1].kind = .image
       #expect(!form.canSubmit(action))
     }
 
-    @Test func stagingAllowsReusingOneMarkFile() throws {
+    @Test func finishingBecomesStagesOnConvert() throws {
+      let action = try #require(ConvertAction.all.first { $0.id == "chromium-html-pdf" })
+      var form = ActionForm(action: action)
+      form.files = [URL(fileURLWithPath: "/tmp/index.html")]
+      form.finishing.merge = true
+      form.finishing.remediate.profiles = ["PDF/A-2b"]
+      form.finishing.encrypt.userPassword = "secret"
+      let stages = try #require(form.fieldsToSend(action).firstValue(for: "stages"))
+      #expect(stages.contains(#""op":"merge""#))
+      #expect(stages.contains(#""op":"remediate""#))
+      #expect(stages.contains(#""op":"encrypt""#))
+      #expect(!form.fieldsToSend(action).contains { $0.name == "pdfa" })
+    }
+
+    @Test func stagingUsesOverrideFilenamesForStampAssets() throws {
       let action = try #require(ConvertAction.all.first { $0.id == "pdf-stamp" })
       let jobID = "mark-test-\(UUID().uuidString)"
       let source = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -66,10 +71,15 @@
       }
       let refs = try EngineController.stageFiles(
         jobID: jobID, action: action, fields: [],
-        files: [("files", source), ("stamp", source), ("stamp", source)])
-      #expect(refs.map(\.field) == ["files", "stamp", "stamp"])
-      #expect(Set(refs.map(\.filename)).count == 3)
-      #expect(Set(refs.map(\.path)).count == 3)
+        files: [
+          FormFileUpload(field: "files", url: source),
+          FormFileUpload(field: "files", url: source, filename: "stamp-0.pdf"),
+          FormFileUpload(field: "files", url: source, filename: "stamp-1.pdf"),
+        ])
+      #expect(refs.map(\.field) == ["files", "files", "files"])
+      #expect(refs.map(\.filename) == [
+        source.lastPathComponent, "stamp-0.pdf", "stamp-1.pdf",
+      ])
       for ref in refs { #expect(try Data(contentsOf: ref.fileURL) == Data("test".utf8)) }
     }
   }

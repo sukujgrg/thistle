@@ -123,11 +123,16 @@ public struct JobResultDTO: Codable, Sendable {
   public var jsonPreview: String?
   public var outputPath: String?
   public var suggestedExtension: String
+  public var remediationSummary: String?
 
-  public init(jsonPreview: String? = nil, outputPath: String? = nil, suggestedExtension: String) {
+  public init(
+    jsonPreview: String? = nil, outputPath: String? = nil, suggestedExtension: String,
+    remediationSummary: String? = nil
+  ) {
     self.jsonPreview = jsonPreview
     self.outputPath = outputPath
     self.suggestedExtension = suggestedExtension
+    self.remediationSummary = remediationSummary
   }
 }
 

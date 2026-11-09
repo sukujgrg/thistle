@@ -12,7 +12,7 @@ public enum EngineIdentity: Sendable {
   public static let guestForwarderResourceName = "vsock-tcp-forward"
   public static let guestForwarderGuestPath = "/usr/local/bin/vsock-tcp-forward"
   public static let guestForwarderMount = "/opt/thistle"
-  public static let image = "docker.io/gotenberg/gotenberg:8"
+  public static let image = "docker.io/gotenberg/gotenberg:9"
   public static let initfs = "ghcr.io/apple/containerization/vminit:0.43.0"
   public static let cpus = 1
   public static let memoryMiB: UInt64 = 2048
@@ -20,7 +20,8 @@ public enum EngineIdentity: Sendable {
   public static let agentPlist = "dev.thistle.engine.plist"
   public static let developerTeamID = "E5N29VFW8T"
   public static let protocolVersion = 2
-  public static let cacheSchema = 1
+  public static let cacheSchema = 2
+
   public static let kernelVersion = "3.26.0"
   public static let idle: Duration = .seconds(15 * 60)
   public static let watchdog: Duration = .seconds(10)
