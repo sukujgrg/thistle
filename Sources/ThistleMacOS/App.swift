@@ -75,7 +75,6 @@ import SwiftUI
   @MainActor
   final class AppDelegate: NSObject, NSApplicationDelegate {
     static var shared: AppDelegate?
-    static var isInstallingUpdate = false
 
     var controller: EngineController?
     private var instanceLock: FileHandle?

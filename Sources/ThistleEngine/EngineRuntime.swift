@@ -8,13 +8,37 @@
   actor EngineRuntime {
     private enum Phase: Equatable {
       case idle
-      case starting(String)
+      case starting(progress: EnginePhase?, operation: String?)
       case running
       case failed(String)
+
+      var label: String {
+        switch self {
+        case .idle:
+          return "Stopped"
+        case .starting(let progress, let operation):
+          if let progress { return progress.label }
+          return operation ?? "Starting"
+        case .running:
+          return "Running"
+        case .failed:
+          return "Failed"
+        }
+      }
+
+      var lifecycle: EngineLifecyclePhase {
+        switch self {
+        case .idle: return .idle
+        case .starting: return .starting
+        case .running: return .running
+        case .failed: return .failed
+        }
+      }
     }
 
     private var engine: Engine?
     private var startTask: Task<Engine, Error>?
+    private var operationTask: Task<Void, Never>?
     private var bootToken: UUID?
     private var phase: Phase = .idle
     private var logs: [EngineLogEntry] = []
@@ -40,8 +64,8 @@
 
     func status() -> EngineStatusDTO {
       EngineStatusDTO(
-        phase: phaseName,
-        phaseLabel: phaseLabel,
+        phase: phase.lifecycle.rawValue,
+        phaseLabel: phase.label,
         guestURL: engine?.baseURL.absoluteString,
         failedMessage: failedMessage,
         logs: logs,
@@ -51,21 +75,29 @@
     }
 
     func requestStart() {
-      if engine != nil || startTask != nil { return }
+      if engine != nil || startTask != nil || operationTask != nil { return }
       recoverCount = 0
       _ = beginStart(forcePull: false)
     }
 
     func requestRestart() {
-      phase = .starting("Restarting engine")
+      guard startTask == nil, operationTask == nil else { return }
+      phase = .starting(progress: nil, operation: "Restarting engine")
       log("Restarting engine")
-      Task { try? await self.restart() }
+      operationTask = Task {
+        try? await self.restart()
+        await self.finishOperation()
+      }
     }
 
     func requestRefreshImage() {
-      phase = .starting("Refreshing image")
+      guard startTask == nil, operationTask == nil else { return }
+      phase = .starting(progress: nil, operation: "Refreshing image")
       log("Refreshing image")
-      Task { try? await self.refreshImage() }
+      operationTask = Task {
+        try? await self.refreshImage()
+        await self.finishOperation()
+      }
     }
 
     func start() async throws {
@@ -77,7 +109,7 @@
 
     func stop(setIdle: Bool = true, logStop: Bool = true) async {
       if setIdle {
-        phase = .starting("Stopping engine")
+        phase = .starting(progress: nil, operation: "Stopping engine")
       }
       let pendingStart = startTask
       bootToken = nil
@@ -108,12 +140,15 @@
 
     func restart() async throws {
       await stop(setIdle: false, logStop: false)
-      try await start()
+      // Bypass requestStart's operationTask gate so restart can boot while
+      // the serialized operation that invoked us is still marked in-flight.
+      recoverCount = 0
+      _ = try await beginStart(forcePull: false).value
     }
 
     func refreshImage() async throws {
       await stop(setIdle: false, logStop: false)
-      phase = .starting("Refreshing image")
+      phase = .starting(progress: nil, operation: "Refreshing image")
       do {
         try await Engine.pullImage()
         _ = try await ensureEngine(forcePull: false)
@@ -124,7 +159,10 @@
     }
 
     func reset() async throws {
-      phase = .starting("Resetting engine")
+      guard startTask == nil, operationTask == nil else {
+        throw EngineError.operationFailed("Engine is busy. Try again when the current operation finishes.")
+      }
+      phase = .starting(progress: nil, operation: "Resetting engine")
       await stop(setIdle: false, logStop: false)
       log("Resetting engine caches")
       do {
@@ -180,7 +218,7 @@
     private func beginStart(forcePull: Bool) -> Task<Engine, Error> {
       let token = UUID()
       bootToken = token
-      phase = .starting(EnginePhase.kernel.label)
+      phase = .starting(progress: .kernel, operation: nil)
       log("Starting engine")
       let task = Task<Engine, Error> {
         try await self.boot(forcePull: forcePull, token: token)
@@ -239,7 +277,7 @@
 
     private func note(_ phase: EnginePhase, token: UUID) {
       guard bootToken == token else { return }
-      self.phase = .starting(phase.label)
+      self.phase = .starting(progress: phase, operation: nil)
       log(phase.label)
     }
 
@@ -270,7 +308,7 @@
     }
 
     private func checkHealth() async {
-      guard let engine, startTask == nil, case .running = phase else { return }
+      guard let engine, startTask == nil, operationTask == nil, case .running = phase else { return }
       do {
         // Built-in health uses loopback only; Local Network denial does not apply.
         try await client.checkHealth(baseURL: engine.baseURL)
@@ -291,6 +329,7 @@
         log("Gave up after \(EngineIdentity.recoverAttempts) recoveries")
         return
       }
+      phase = .starting(progress: nil, operation: "Recovering engine")
       log("Recovering engine (\(recoverCount)/\(EngineIdentity.recoverAttempts))")
       let current = engine
       engine = nil
@@ -303,6 +342,10 @@
       } catch {
         phase = .failed(EngineError.message(for: error))
       }
+    }
+
+    private func finishOperation() {
+      operationTask = nil
     }
 
     private func flush(_ trace: HTTPTrace) {
@@ -330,24 +373,6 @@
       fputs("\(message)\n", stdout)
       fflush(stdout)
       EngineLogFile.rotateIfNeeded()
-    }
-
-    private var phaseName: String {
-      switch phase {
-      case .idle: "idle"
-      case .starting: "starting"
-      case .running: "running"
-      case .failed: "failed"
-      }
-    }
-
-    private var phaseLabel: String {
-      switch phase {
-      case .idle: "Stopped"
-      case .starting(let label): label
-      case .running: "Running"
-      case .failed: "Failed"
-      }
     }
 
     private var failedMessage: String? {

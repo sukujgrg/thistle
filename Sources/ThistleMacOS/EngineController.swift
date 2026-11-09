@@ -14,22 +14,32 @@
       case idle
       case starting(String)
       case running(String)
-      case failed(String)
+      case failed(message: String, kind: EngineFailureKind)
     }
 
+    /// Single source of truth for convert job presentation.
     enum JobStatus: Equatable {
       case idle
       case working(String)
-      case succeeded(String)
+      case succeededFile(path: String, saved: Bool)
+      case succeededJSON(String)
       case failed(String)
+    }
+
+    /// Remote engine connection relative to applied settings.
+    enum RemoteConnection: Equatable {
+      case notRemote
+      case draftDirty
+      case connecting
+      case connected
+      case unreachable(String)
     }
 
     var status: Status = .idle
     var jobStatus: JobStatus = .idle
-    var jsonPreview: String?
     var lastSuggestedName = ""
     var resultActionID: String?
-    var resultSaved = false
+    var isEditingAfterResult = false
     var saveError: String?
     var logs: [EngineLogEntry] = []
     var imageDigest: String?
@@ -76,10 +86,21 @@
       }
     }
 
-    var canSaveResult: Bool {
-      if jsonPreview != nil { return true }
-      if case .succeeded = jobStatus { return true }
+    var jsonPreview: String? {
+      if case .succeededJSON(let json) = jobStatus { return json }
+      return nil
+    }
+
+    var resultSaved: Bool {
+      if case .succeededFile(_, let saved) = jobStatus { return saved }
       return false
+    }
+
+    var canSaveResult: Bool {
+      switch jobStatus {
+      case .succeededFile, .succeededJSON: true
+      default: false
+      }
     }
 
     var isStarting: Bool {
@@ -101,15 +122,14 @@
 
     var needsLocalNetworkAccess: Bool {
       guard usesRemote else { return false }
-      guard case .failed(let message) = status else { return false }
-      guard message.contains(EngineError.localNetworkAccessDenied.description) else { return false }
+      guard case .failed(_, let kind) = status, kind == .localNetworkDenied else { return false }
       guard let url = try? EngineSettings.parseURL(remoteURLText) else { return true }
       return LocalNetworkPrivacy.urlRequiresPermission(url)
     }
 
     var needsAgentApproval: Bool {
-      guard case .failed(let message) = status else { return false }
-      return message.contains(EngineError.agentNeedsApproval.description)
+      guard case .failed(_, let kind) = status else { return false }
+      return kind == .agentNeedsApproval
     }
 
     var canManageVM: Bool { !usesRemote }
@@ -129,17 +149,45 @@
     }
 
     var highlightsUnappliedRemoteURL: Bool {
-      guard hasUnappliedRemoteURL else { return false }
+      guard case .draftDirty = remoteConnection else { return false }
       if case .failed = status { return false }
       return true
     }
 
+    var remoteConnection: RemoteConnection {
+      guard usesRemote else { return .notRemote }
+      if hasUnappliedRemoteURL { return .draftDirty }
+      switch status {
+      case .starting: return .connecting
+      case .running: return .connected
+      case .failed(let message, _): return .unreachable(message)
+      case .idle: return .unreachable("Not connected")
+      }
+    }
+
     var remoteNeedsConnection: Bool {
-      usesRemote && (!isRunning || hasUnappliedRemoteURL)
+      switch remoteConnection {
+      case .notRemote, .connected: false
+      case .draftDirty, .connecting, .unreachable: true
+      }
     }
 
     var canSubmitJobs: Bool {
-      !usesRemote || !remoteNeedsConnection
+      switch remoteConnection {
+      case .notRemote, .connected: true
+      case .draftDirty, .connecting, .unreachable: false
+      }
+    }
+
+    var hasCompletedResult: Bool {
+      switch jobStatus {
+      case .succeededFile, .succeededJSON: true
+      default: false
+      }
+    }
+
+    func beginEditingAfterResult() {
+      isEditingAfterResult = true
     }
 
     var baseURL: URL? {
@@ -314,10 +362,9 @@
     func resetJob() {
       discardUnsavedResult()
       jobStatus = .idle
-      jsonPreview = nil
       lastSuggestedName = ""
       resultActionID = nil
-      resultSaved = false
+      isEditingAfterResult = false
       saveError = nil
       suggestedSaveDirectory = nil
     }
@@ -328,10 +375,9 @@
     ) async {
       discardUnsavedResult()
       jobStatus = .working(action.title)
-      jsonPreview = nil
       lastSuggestedName = suggestedName
       resultActionID = action.id
-      resultSaved = false
+      isEditingAfterResult = false
       saveError = nil
       suggestedSaveDirectory = saveDirectory
       let jobID = UUID().uuidString
@@ -390,9 +436,9 @@
     }
 
     private func finishJob(result: JobResultDTO, jobID: String, suggestedName: String) throws {
-      jsonPreview = result.jsonPreview
-      if result.jsonPreview != nil {
-        jobStatus = .idle
+      if let json = result.jsonPreview {
+        jobStatus = .succeededJSON(json)
+        isEditingAfterResult = false
         try? FileManager.default.removeItem(at: Paths.jobDirectory(jobID))
         return
       }
@@ -405,20 +451,23 @@
         OutputFile.filename(basename: suggestedName, ext: result.suggestedExtension))
       try OutputFile.place(source, at: named, moving: true)
       unsavedJobDirectory = jobDirectory
-      resultSaved = false
-      jobStatus = .succeeded(named.path(percentEncoded: false))
+      jobStatus = .succeededFile(path: named.path(percentEncoded: false), saved: false)
+      isEditingAfterResult = false
     }
 
     func saveCurrentResult(defaultJSONName: String = "") async {
-      if jsonPreview != nil {
+      switch jobStatus {
+      case .succeededJSON:
         await saveJSONPreview(defaultName: defaultJSONName)
-      } else {
+      case .succeededFile:
         await saveResult()
+      default:
+        break
       }
     }
 
     func saveResult() async {
-      guard case .succeeded(let path) = jobStatus else { return }
+      guard case .succeededFile(let path, let saved) = jobStatus else { return }
       let source = URL(fileURLWithPath: path)
       let ext = source.pathExtension.isEmpty ? "pdf" : source.pathExtension
       saveError = nil
@@ -432,11 +481,10 @@
         return
       }
       do {
-        try OutputFile.place(source, at: output, moving: !resultSaved)
+        try OutputFile.place(source, at: output, moving: !saved)
         rememberSaveDirectory(output)
-        let cleanup = !resultSaved
-        resultSaved = true
-        jobStatus = .succeeded(output.path(percentEncoded: false))
+        let cleanup = !saved
+        jobStatus = .succeededFile(path: output.path(percentEncoded: false), saved: true)
         if cleanup {
           discardUnsavedJobDirectoryKeepingResult()
         }
@@ -448,7 +496,9 @@
     func saveJSONPreview(defaultName: String) async {
       let fallback = defaultName.isEmpty ? "result" : defaultName
       let name = lastSuggestedName.isEmpty ? fallback : lastSuggestedName
-      guard let jsonPreview, let data = jsonPreview.data(using: .utf8) else { return }
+      guard case .succeededJSON(let json) = jobStatus,
+        let data = json.data(using: .utf8)
+      else { return }
       saveError = nil
       guard
         let output = await Self.askSave(
@@ -459,15 +509,14 @@
       do {
         try data.write(to: output, options: .atomic)
         rememberSaveDirectory(output)
-        resultSaved = true
-        jobStatus = .succeeded(output.path(percentEncoded: false))
+        jobStatus = .succeededFile(path: output.path(percentEncoded: false), saved: true)
       } catch {
         saveError = error.localizedDescription
       }
     }
 
     func revealResult() {
-      guard case .succeeded(let path) = jobStatus else { return }
+      guard case .succeededFile(let path, _) = jobStatus else { return }
       NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
@@ -543,7 +592,7 @@
           appliedRemoteCredentials == credentials, usesRemote
         else { return }
         let message = "Could not connect to Gotenberg: \(EngineError.message(for: error))"
-        status = .failed(message)
+        status = .failed(message: message, kind: EngineFailureKind.from(error))
         gotenbergVersion = nil
         if remoteWasReachable != false || connecting { noteRemote(message) }
         remoteWasReachable = false
@@ -614,15 +663,16 @@
       if imageDigest != dto.imageDigest {
         imageDigest = dto.imageDigest
       }
+      let lifecycle = EngineLifecyclePhase(rawValue: dto.phase) ?? .idle
       let next: Status =
-        switch dto.phase {
-        case "running":
+        switch lifecycle {
+        case .running:
           .running(dto.guestURL ?? "")
-        case "starting":
+        case .starting:
           .starting(dto.phaseLabel)
-        case "failed":
-          .failed(dto.failedMessage ?? "Engine failed")
-        default:
+        case .failed:
+          failedStatus(message: dto.failedMessage ?? "Engine failed")
+        case .idle:
           .idle
         }
       if status != next {
@@ -631,7 +681,12 @@
     }
 
     private func applyError(_ error: Error) {
-      status = .failed(EngineError.message(for: error))
+      status = .failed(
+        message: EngineError.message(for: error), kind: EngineFailureKind.from(error))
+    }
+
+    private func failedStatus(message: String) -> Status {
+      .failed(message: message, kind: EngineFailureKind.infer(from: message))
     }
 
     static func stageFiles(
@@ -683,7 +738,7 @@
     }
 
     private func discardUnsavedResult() {
-      guard !resultSaved, let unsavedJobDirectory else {
+      guard case .succeededFile(_, false) = jobStatus, let unsavedJobDirectory else {
         self.unsavedJobDirectory = nil
         return
       }
@@ -694,7 +749,7 @@
     private func discardUnsavedJobDirectoryKeepingResult() {
       guard let unsavedJobDirectory else { return }
       defer { self.unsavedJobDirectory = nil }
-      if case .succeeded(let path) = jobStatus {
+      if case .succeededFile(let path, _) = jobStatus {
         let resultPath = URL(fileURLWithPath: path).standardizedFileURL.path(percentEncoded: false)
         let root = unsavedJobDirectory.standardizedFileURL.path(percentEncoded: false)
         if resultPath == root || resultPath.hasPrefix(root + "/") {
@@ -713,7 +768,7 @@
     }
 
     private func defaultSaveDirectory() -> URL? {
-      if resultSaved, case .succeeded(let path) = jobStatus {
+      if case .succeededFile(let path, true) = jobStatus {
         return URL(fileURLWithPath: path).deletingLastPathComponent()
       }
       for candidate in [suggestedSaveDirectory, lastSaveDirectory] {

@@ -8,7 +8,7 @@
     let label: String
 
     init(controller: EngineController, compact: Bool) {
-      if controller.highlightsUnappliedRemoteURL {
+      if case .draftDirty = controller.remoteConnection, controller.highlightsUnappliedRemoteURL {
         color = .orange
         label = "Connection changed"
         return

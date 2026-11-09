@@ -34,24 +34,28 @@
 
     @Test func permissionFailureOffersSettingsOnlyForRemoteLAN() {
       let builtIn = EngineController(settings: EngineSettings())
-      builtIn.status = .failed(EngineError.localNetworkAccessDenied.description)
+      builtIn.status = .failed(
+        message: EngineError.localNetworkAccessDenied.description, kind: .localNetworkDenied)
       #expect(!builtIn.needsLocalNetworkAccess)
 
       let remote = EngineController(
         settings: EngineSettings(mode: .remote, remoteURL: "http://192.168.1.10:3000"))
       remote.remoteURLText = "http://192.168.1.10:3000"
-      remote.status = .failed(EngineError.localNetworkAccessDenied.description)
+      remote.status = .failed(
+        message: EngineError.localNetworkAccessDenied.description, kind: .localNetworkDenied)
       #expect(remote.needsLocalNetworkAccess)
       #expect(!remote.needsAgentApproval)
 
-      remote.status = .failed(EngineError.agentNeedsApproval.description)
+      remote.status = .failed(
+        message: EngineError.agentNeedsApproval.description, kind: .agentNeedsApproval)
       #expect(remote.needsAgentApproval)
       #expect(!remote.needsLocalNetworkAccess)
 
       let loopbackRemote = EngineController(
         settings: EngineSettings(mode: .remote, remoteURL: "http://127.0.0.1:3000"))
       loopbackRemote.remoteURLText = "http://127.0.0.1:3000"
-      loopbackRemote.status = .failed(EngineError.localNetworkAccessDenied.description)
+      loopbackRemote.status = .failed(
+        message: EngineError.localNetworkAccessDenied.description, kind: .localNetworkDenied)
       #expect(!loopbackRemote.needsLocalNetworkAccess)
     }
   }

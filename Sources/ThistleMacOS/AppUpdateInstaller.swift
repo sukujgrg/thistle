@@ -11,7 +11,6 @@
       AppUpdateViewModel(
         installUpdateAction: run,
         terminateAction: {
-          AppDelegate.isInstallingUpdate = true
           NSApp.terminate(nil)
         }
       )

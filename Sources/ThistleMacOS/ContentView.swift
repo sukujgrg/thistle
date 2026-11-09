@@ -104,7 +104,7 @@
         .sharedBackgroundVisibility(.hidden)
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
-        if case .failed(let message) = controller.status {
+        if case .failed(let message, _) = controller.status {
           HStack(spacing: 12) {
             Text(message)
               .font(.callout)

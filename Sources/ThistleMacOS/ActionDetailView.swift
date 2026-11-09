@@ -15,7 +15,6 @@
     @State private var importingSlot: FileSlot?
     @State private var filePicker: FileSlotPicker?
     @State private var importError: String?
-    @State private var editingAfterResult = false
 
     init(action: ConvertAction) {
       self.action = action
@@ -56,17 +55,6 @@
         form = ActionForm(action: action)
         expandedSections = []
         importError = nil
-        editingAfterResult = false
-      }
-      .onChange(of: controller.jobStatus) { _, status in
-        if case .succeeded = status, controller.resultActionID == action.id {
-          editingAfterResult = false
-        }
-      }
-      .onChange(of: controller.jsonPreview) { _, preview in
-        if preview != nil, controller.resultActionID == action.id {
-          editingAfterResult = false
-        }
       }
     }
 
@@ -75,23 +63,24 @@
     }
 
     private var hasCompletedResult: Bool {
-      guard isCurrentResult else { return false }
-      if case .succeeded = controller.jobStatus { return true }
-      return controller.jsonPreview != nil
+      isCurrentResult && controller.hasCompletedResult
     }
 
     private var showsComposer: Bool {
-      if controller.isWorking { return true }
-      if case .failed = controller.jobStatus, isCurrentResult { return true }
-      if hasCompletedResult { return editingAfterResult }
-      return true
+      guard isCurrentResult else { return true }
+      if controller.isEditingAfterResult { return true }
+      switch controller.jobStatus {
+      case .succeededFile, .succeededJSON: return false
+      case .working, .failed, .idle: return true
+      }
     }
 
     private var showsResult: Bool {
       guard isCurrentResult else { return false }
-      if case .succeeded = controller.jobStatus { return true }
-      if case .failed = controller.jobStatus { return true }
-      return controller.jsonPreview != nil
+      switch controller.jobStatus {
+      case .succeededFile, .succeededJSON, .failed: return true
+      case .working, .idle: return false
+      }
     }
 
     private var header: some View {
@@ -623,13 +612,13 @@
 
     @ViewBuilder
     private var resultSection: some View {
-      if case .succeeded(let path) = controller.jobStatus, isCurrentResult {
-        ResultCard(path: path, saved: controller.resultSaved) {
+      if case .succeededFile(let path, let saved) = controller.jobStatus, isCurrentResult {
+        ResultCard(path: path, saved: saved) {
           controller.revealResult()
         } save: {
           Task { await controller.saveResult() }
         } startNew: {
-          editingAfterResult = true
+          controller.beginEditingAfterResult()
         }
       }
       if let message = controller.saveError, isCurrentResult {
@@ -638,7 +627,7 @@
           .foregroundStyle(.red)
           .textSelection(.enabled)
       }
-      if let json = controller.jsonPreview, isCurrentResult {
+      if case .succeededJSON(let json) = controller.jobStatus, isCurrentResult {
         VStack(alignment: .leading, spacing: 8) {
           HStack {
             Text("JSON")
@@ -649,7 +638,7 @@
             }
             .buttonStyle(.borderless)
             Button("New") {
-              editingAfterResult = true
+              controller.beginEditingAfterResult()
             }
           }
           JSONTextEditor(text: .constant(json), isEditable: false)

@@ -440,7 +440,7 @@
         "idle:\(digest)"
       case .running(let url):
         "running:\(url):\(digest)"
-      case .failed(let message):
+      case .failed(let message, _):
         "failed:\(message):\(digest)"
       }
     }

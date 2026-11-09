@@ -2,13 +2,20 @@ import Foundation
 import Observation
 import os
 
+public enum AppUpdatePhase: Equatable, Sendable {
+  case idle
+  case checking
+  case available(AppUpdateRelease)
+  case upToDate(AppUpdateCheckAlert)
+  case downloading(AppUpdateRelease)
+  case installing(AppUpdateRelease)
+  case failed(AppUpdateCheckAlert)
+}
+
 @MainActor
 @Observable
 public final class AppUpdateViewModel {
-  public private(set) var availableRelease: AppUpdateRelease?
-  public var checkAlert: AppUpdateCheckAlert?
-  public private(set) var isDownloading = false
-  public private(set) var isInstalling = false
+  public private(set) var phase: AppUpdatePhase = .idle
 
   @ObservationIgnored private let service: any AppUpdateServicing
   @ObservationIgnored private let runUpdaterAction: (URL) async throws -> Void
@@ -17,6 +24,7 @@ public final class AppUpdateViewModel {
   @ObservationIgnored private var hasChecked = false
   @ObservationIgnored private var checkTask: Task<Void, Never>?
   @ObservationIgnored private var downloadTask: Task<Void, Never>?
+  @ObservationIgnored private var retainedRelease: AppUpdateRelease?
 
   public init(
     service: any AppUpdateServicing = GitHubReleaseUpdateService(),
@@ -31,6 +39,53 @@ public final class AppUpdateViewModel {
     self.terminateAction = terminateAction
   }
 
+  public var availableRelease: AppUpdateRelease? {
+    switch phase {
+    case .available(let release), .downloading(let release), .installing(let release):
+      release
+    case .failed:
+      retainedRelease
+    default:
+      nil
+    }
+  }
+
+  public var checkAlert: AppUpdateCheckAlert? {
+    get {
+      switch phase {
+      case .failed(let alert), .upToDate(let alert):
+        alert
+      default:
+        nil
+      }
+    }
+    set {
+      guard newValue == nil else { return }
+      switch phase {
+      case .failed:
+        if let retainedRelease {
+          phase = .available(retainedRelease)
+        } else {
+          phase = .idle
+        }
+      case .upToDate:
+        phase = .idle
+      default:
+        break
+      }
+    }
+  }
+
+  public var isDownloading: Bool {
+    if case .downloading = phase { return true }
+    return false
+  }
+
+  public var isInstalling: Bool {
+    if case .installing = phase { return true }
+    return false
+  }
+
   public func checkForUpdatesIfNeeded() {
     guard !hasChecked else {
       return
@@ -42,67 +97,73 @@ public final class AppUpdateViewModel {
   public func checkForUpdates(reportsResult: Bool = true) {
     hasChecked = true
     checkTask?.cancel()
+    phase = .checking
     checkTask = Task {
       do {
         let release = try await service.checkForUpdate()
-        availableRelease = release
-        if reportsResult, release == nil {
-          checkAlert = AppUpdateCheckAlert(
-            title: "Thistle is up to date",
-            message: "You are running the latest available version."
-          )
+        if let release {
+          retainedRelease = release
+          phase = .available(release)
+        } else if reportsResult {
+          retainedRelease = nil
+          phase = .upToDate(
+            AppUpdateCheckAlert(
+              title: "Thistle is up to date",
+              message: "You are running the latest available version."
+            ))
+        } else {
+          retainedRelease = nil
+          phase = .idle
         }
       } catch {
         logger.error("Update check failed: \(error.localizedDescription, privacy: .public)")
-        availableRelease = nil
+        retainedRelease = nil
         if reportsResult {
-          checkAlert = AppUpdateCheckAlert(
-            title: "Unable to check for updates",
-            message: "Try again later, or check the GitHub releases page manually.",
-            releaseURL: AppUpdateRelease.releasesPageURL
-          )
+          phase = .failed(
+            AppUpdateCheckAlert(
+              title: "Unable to check for updates",
+              message: "Try again later, or check the GitHub releases page manually.",
+              releaseURL: AppUpdateRelease.releasesPageURL
+            ))
+        } else {
+          phase = .idle
         }
       }
     }
   }
 
   public func downloadAndInstallUpdate() {
-    guard let release = availableRelease,
-      !isDownloading,
-      !isInstalling
-    else {
+    guard case .available(let release) = phase else {
       return
     }
 
-    isDownloading = true
+    phase = .downloading(release)
     downloadTask?.cancel()
     downloadTask = Task {
-      defer {
-        isDownloading = false
-      }
-
       do {
         let download = try await service.downloadUpdate(release)
-        try await installUpdate(from: download.archiveURL)
+        try await installUpdate(from: download.archiveURL, release: release)
       } catch {
         logger.error(
           "Update install preparation failed: \(error.localizedDescription, privacy: .public)")
-        checkAlert = AppUpdateCheckAlert(
-          title: "Unable to install update",
-          message: """
-            \(error.localizedDescription)
+        retainedRelease = release
+        phase = .failed(
+          AppUpdateCheckAlert(
+            title: "Unable to install update",
+            message: """
+              \(error.localizedDescription)
 
-            You can download Thistle \(release.version) from the release page.
-            """,
-          releaseURL: release.releaseURL
-        )
+              You can download Thistle \(release.version) from the release page.
+              """,
+            releaseURL: release.releaseURL
+          ))
       }
     }
   }
 
-  private func installUpdate(from archiveURL: URL) async throws {
+  private func installUpdate(from archiveURL: URL, release: AppUpdateRelease) async throws {
     try await runUpdaterAction(archiveURL)
-    isInstalling = true
+    phase = .installing(release)
     terminateAction()
   }
 }
