@@ -32,6 +32,39 @@
       try render(
         EngineInspectorView().environment(controller).frame(width: 850),
         to: output.appendingPathComponent("remote-auth.png"))
+
+      let failed = EngineController(settings: EngineSettings())
+      failed.status = .failed(
+        message: EngineError.hostAPIPortInUse(18_765).description, kind: .generic)
+      failed.logs = [
+        EngineLogEntry(date: Date(timeIntervalSince1970: 1_700_000_000), message: "Starting"),
+        EngineLogEntry(
+          date: Date(timeIntervalSince1970: 1_700_000_001),
+          message: EngineError.hostAPIPortInUse(18_765).description),
+      ]
+      let presentation = EngineFailurePresentation.engine(
+        message: EngineError.hostAPIPortInUse(18_765).description,
+        kind: .generic,
+        usesRemote: false,
+        needsLocalNetworkAccess: false
+      )
+      try render(
+        RecoveryBanner(
+          title: presentation.title,
+          detail: presentation.detail,
+          primaryTitle: presentation.primaryTitle,
+          showsDetails: true,
+          onPrimary: {},
+          onDetails: {}
+        )
+        .frame(width: 850),
+        to: output.appendingPathComponent("recovery-banner.png"))
+      failed.inspectorPresented = true
+      failed.focusActivityLog = true
+      try render(
+        EngineInspectorView().environment(failed).frame(width: 850),
+        to: output.appendingPathComponent("activity-expanded.png"))
+
       var image = PDFStamp(text: "")
       image.kind = .image
       image.files = [URL(fileURLWithPath: "/tmp/logo.png")]

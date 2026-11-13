@@ -66,6 +66,17 @@
         snapshot = await EngineSnapshot.load(
           guestURL: url, imageDigest: controller.imageDigest)
       }
+      .onChange(of: controller.focusActivityLog) { _, focus in
+        guard focus else { return }
+        logExpanded = true
+        controller.focusActivityLog = false
+      }
+      .onAppear {
+        if controller.focusActivityLog {
+          logExpanded = true
+          controller.focusActivityLog = false
+        }
+      }
     }
 
     private var header: some View {
@@ -192,7 +203,7 @@
       VStack(alignment: .leading, spacing: 6) {
         fact("Source", "Custom URL")
         fact("API", remoteAPIValue)
-        fact("Log", "This app session")
+        fact("Activity", "This app session")
       }
       .textSelection(.enabled)
     }
@@ -372,8 +383,8 @@
     }
 
     private var logSection: some View {
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(spacing: 8) {
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
           Button {
             logExpanded.toggle()
           } label: {
@@ -382,47 +393,66 @@
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .rotationEffect(.degrees(logExpanded ? 90 : 0))
-              Text("Log")
+              Text("Activity")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-              Text("Last \(EngineLogEntry.retainedCount) events")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-              Text(logExpanded ? "Show less" : "Show more")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+              if !logExpanded, !controller.logs.isEmpty {
+                Text("\(min(controller.logs.count, EngineLogEntry.retainedCount))")
+                  .font(.caption2.monospacedDigit())
+                  .foregroundStyle(.tertiary)
+                  .padding(.horizontal, 5)
+                  .padding(.vertical, 1)
+                  .background(.quaternary.opacity(0.5), in: Capsule())
+              }
+              Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .padding(.vertical, 2)
           }
           .buttonStyle(.plain)
-          .accessibilityLabel("Log")
+          .accessibilityLabel("Activity")
           .accessibilityValue(logExpanded ? "Expanded" : "Collapsed")
           .accessibilityHint(
-            logExpanded ? "Shows a shorter log preview" : "Shows a taller log panel")
+            logExpanded ? "Hides recent engine activity" : "Shows recent engine activity")
 
-          Spacer(minLength: 8)
-
-          if !controller.logs.isEmpty {
+          if logExpanded, !controller.logs.isEmpty {
             Button("Copy") {
               NSPasteboard.general.clearContents()
               NSPasteboard.general.setString(logText, forType: .string)
             }
             .buttonStyle(.borderless)
+            .accessibilityLabel("Copy activity")
             Button("Clear") {
               Task { await controller.clearLogs() }
             }
             .buttonStyle(.borderless)
+            .accessibilityLabel("Clear activity")
+            Button("Show in Finder") {
+              try? FileManager.default.createDirectory(
+                at: Paths.appRoot, withIntermediateDirectories: true)
+              if FileManager.default.fileExists(atPath: Paths.engineLog.path(percentEncoded: false))
+              {
+                NSWorkspace.shared.activateFileViewerSelecting([Paths.engineLog])
+              } else {
+                NSWorkspace.shared.open(Paths.appRoot)
+              }
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Show activity log in Finder")
           }
         }
-        LogTextView(text: logText, isEmpty: controller.logs.isEmpty)
-          .frame(minHeight: logExpanded ? 180 : 64, maxHeight: logExpanded ? 260 : 88)
-          .padding(8)
-          .background(
-            .quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-          )
-          .animation(.snappy(duration: 0.2), value: logExpanded)
+        if logExpanded {
+          LogTextView(text: logText, isEmpty: controller.logs.isEmpty)
+            .frame(minHeight: 180, maxHeight: 260)
+            .padding(8)
+            .background(
+              .quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
       }
+      .animation(.snappy(duration: 0.2), value: logExpanded)
     }
 
     private var logText: String {
@@ -473,7 +503,7 @@
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
       guard let textView = scrollView.documentView as? NSTextView else { return }
-      let display = isEmpty ? "No events yet." : text
+      let display = isEmpty ? "No activity yet." : text
       let changed = textView.string != display
       if changed {
         textView.string = display

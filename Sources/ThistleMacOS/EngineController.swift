@@ -52,6 +52,8 @@
     var checkingEngineUpdate = false
     var engineUpdateError: String?
     var inspectorPresented = false
+    /// One-shot: inspector expands Activity when Details is chosen from recovery chrome.
+    var focusActivityLog = false
     var confirmReset = false
     private static let lastSaveDirectoryKey = "lastSaveDirectory"
 
@@ -188,6 +190,20 @@
 
     func beginEditingAfterResult() {
       isEditingAfterResult = true
+    }
+
+    func showActivityDetails() {
+      inspectorPresented = true
+      focusActivityLog = true
+    }
+
+    /// Primary recovery for a failed engine: settings CTAs are handled by the view.
+    func retryAfterFailure() async {
+      if usesRemote {
+        await applyRemoteURL()
+      } else {
+        await start()
+      }
     }
 
     var baseURL: URL? {

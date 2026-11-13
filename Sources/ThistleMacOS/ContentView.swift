@@ -78,10 +78,9 @@
       }
       .toolbar {
         ToolbarItem(placement: .primaryAction) {
-          HStack(spacing: 8) {
+          HStack(spacing: 10) {
             AppUpdateToolbarButton(viewModel: appUpdateViewModel)
-            engineStatus
-            engineButton
+            engineCluster
             if !controller.hasUnappliedRemoteURL,
               case .running(let url) = controller.status
             {
@@ -104,34 +103,38 @@
         .sharedBackgroundVisibility(.hidden)
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
-        if case .failed(let message, _) = controller.status {
-          HStack(spacing: 12) {
-            Text(message)
-              .font(.callout)
-              .foregroundStyle(.red)
-              .textSelection(.enabled)
-              .accessibilityLabel("Engine failure")
-              .accessibilityValue(message)
-              .frame(maxWidth: .infinity, alignment: .leading)
-            if controller.needsLocalNetworkAccess {
-              Button("Open Local Network Settings") {
-                if let url = try? EngineSettings.parseURL(controller.remoteURLText),
-                  LocalNetworkPrivacy.urlRequiresPermission(url)
-                {
-                  LocalNetworkPrivacy.triggerAlert()
-                }
-                NSWorkspace.shared.open(LocalNetworkPrivacy.settingsURL)
-              }
-            } else if controller.needsAgentApproval {
-              Button("Open Login Items") {
-                EngineAgent.openLoginItemsSettings()
-              }
-            }
-          }
-          .padding(.horizontal, 16)
-          .padding(.vertical, 10)
-          .background(.red.opacity(0.08))
+        if case .failed(let message, let kind) = controller.status {
+          let presentation = EngineFailurePresentation.engine(
+            message: message,
+            kind: kind,
+            usesRemote: controller.usesRemote,
+            needsLocalNetworkAccess: controller.needsLocalNetworkAccess
+          )
+          RecoveryBanner(
+            title: presentation.title,
+            detail: presentation.detail,
+            primaryTitle: presentation.primaryTitle,
+            showsDetails: presentation.showsDetails,
+            onPrimary: { performRecovery(presentation.primaryAction) },
+            onDetails: { controller.showActivityDetails() }
+          )
         }
+      }
+    }
+
+    private func performRecovery(_ action: EngineFailurePresentation.PrimaryAction) {
+      switch action {
+      case .openLocalNetworkSettings:
+        if let url = try? EngineSettings.parseURL(controller.remoteURLText),
+          LocalNetworkPrivacy.urlRequiresPermission(url)
+        {
+          LocalNetworkPrivacy.triggerAlert()
+        }
+        NSWorkspace.shared.open(LocalNetworkPrivacy.settingsURL)
+      case .openLoginItems:
+        EngineAgent.openLoginItemsSettings()
+      case .tryAgain, .connect:
+        Task { await controller.retryAfterFailure() }
       }
     }
 
@@ -202,6 +205,16 @@
       }
     }
 
+    /// Status pill + Start/Stop|Connect as one visual cluster.
+    private var engineCluster: some View {
+      HStack(spacing: 6) {
+        engineStatus
+        engineButton
+      }
+      .padding(3)
+      .background(.primary.opacity(0.06), in: Capsule())
+    }
+
     private var engineStatus: some View {
       let chrome = EngineStatusChrome(controller: controller, compact: false)
       return Button {
@@ -224,7 +237,8 @@
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(.primary.opacity(controller.inspectorPresented ? 0.14 : 0.08), in: Capsule())
+        .background(
+          .primary.opacity(controller.inspectorPresented ? 0.14 : 0.06), in: Capsule())
       }
       .buttonStyle(.plain)
       .help("Engine inspector")
@@ -244,6 +258,8 @@
           }
           .buttonStyle(ToolbarPillButtonStyle())
           .disabled(controller.isStarting)
+          .accessibilityLabel("Connect")
+          .accessibilityHint("Connects to the custom Gotenberg URL")
         }
       } else {
         Menu {
@@ -273,6 +289,7 @@
         .menuIndicator(.visible)
         .buttonStyle(ToolbarPillButtonStyle())
         .disabled(controller.isStarting || controller.isWorking)
+        .accessibilityLabel(controller.isRunning ? "Stop Engine" : "Start Engine")
       }
     }
 

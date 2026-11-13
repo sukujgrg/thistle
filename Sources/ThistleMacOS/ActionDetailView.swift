@@ -575,15 +575,12 @@
         }
 
         if case .failed(let message) = controller.jobStatus, isCurrentResult {
-          Text(message)
-            .font(.callout)
-            .foregroundStyle(.red)
-            .textSelection(.enabled)
+          let failure = EngineFailurePresentation.job(message: message)
+          InlineFailure(title: failure.title, detail: failure.detail)
         }
         if let importError {
-          Text(importError)
-            .font(.callout)
-            .foregroundStyle(.red)
+          let failure = EngineFailurePresentation.importFailure(message: importError)
+          InlineFailure(title: failure.title, detail: failure.detail)
         } else if let compatibilityIssue {
           Text(compatibilityIssue)
             .font(.callout)
@@ -622,10 +619,8 @@
         }
       }
       if let message = controller.saveError, isCurrentResult {
-        Text(message)
-          .font(.callout)
-          .foregroundStyle(.red)
-          .textSelection(.enabled)
+        let failure = EngineFailurePresentation.saveFailure(message: message)
+        InlineFailure(title: failure.title, detail: failure.detail)
       }
       if case .succeededJSON(let json, let note) = controller.jobStatus, isCurrentResult {
         VStack(alignment: .leading, spacing: 8) {
