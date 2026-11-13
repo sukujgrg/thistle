@@ -12,7 +12,8 @@ public enum EngineIdentity: Sendable {
   public static let guestForwarderResourceName = "vsock-tcp-forward"
   public static let guestForwarderGuestPath = "/usr/local/bin/vsock-tcp-forward"
   public static let guestForwarderMount = "/opt/thistle"
-  public static let image = "docker.io/gotenberg/gotenberg:9"
+  /// Patch-pinned for Thistle 1.x; do not float on `:9`.
+  public static let image = "docker.io/gotenberg/gotenberg:9.5.0"
   public static let initfs = "ghcr.io/apple/containerization/vminit:0.43.0"
   public static let cpus = 1
   public static let memoryMiB: UInt64 = 2048
@@ -26,6 +27,10 @@ public enum EngineIdentity: Sendable {
   public static let idle: Duration = .seconds(15 * 60)
   public static let watchdog: Duration = .seconds(10)
   public static let recoverAttempts = 3
+  /// Consecutive `/health` failures required before recycling the guest.
+  public static let healthFailureThreshold = 3
+  public static let versionProbeAttempts = 5
+  public static let versionProbeBackoff: Duration = .milliseconds(200)
 
   public static var loopbackAPIURL: URL {
     loopbackAPIURL(port: hostAPIPort)

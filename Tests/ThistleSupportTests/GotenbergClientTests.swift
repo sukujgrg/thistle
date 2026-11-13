@@ -126,4 +126,51 @@ struct GotenbergClientTests {
     #expect(
       !APIRedirectDelegate.allows(from: url, to: URL(string: "https://user@engine.example/api")))
   }
+
+  @Test func healthProbeDoesNotWaitOnInFlightConversion() async throws {
+    let gate = ProbeGate()
+    let client = GotenbergClient(
+      jobLoader: { request in
+        await gate.waitUntilHealthFinished()
+        return (
+          Data("{}".utf8),
+          HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [:])!
+        )
+      },
+      probeLoader: { request in
+        await gate.markHealthFinished()
+        #expect(request.url?.lastPathComponent == "health")
+        return (
+          Data(),
+          HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [:])!
+        )
+      }
+    )
+
+    async let convert: GotenbergClient.Response = client.submit(
+      baseURL: url, path: "/forms/pdf/merge", fields: [], files: [])
+    try await client.checkHealth(baseURL: url)
+    _ = try await convert
+  }
+}
+
+private actor ProbeGate {
+  private var healthFinished = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func markHealthFinished() {
+    healthFinished = true
+    let waiters = self.waiters
+    self.waiters = []
+    for waiter in waiters {
+      waiter.resume()
+    }
+  }
+
+  func waitUntilHealthFinished() async {
+    if healthFinished { return }
+    await withCheckedContinuation { continuation in
+      waiters.append(continuation)
+    }
+  }
 }

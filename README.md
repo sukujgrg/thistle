@@ -37,7 +37,7 @@ If you point a **custom** engine URL at a LAN host, macOS may ask for Local Netw
 
 ## First start
 
-The first **Start Engine** downloads a Kata arm64 kernel, Apple's `vminit`, and `gotenberg/gotenberg:9` (Chromium, LibreOffice, and the litho PDF engine). Later starts reuse `~/Library/Application Support/thistle/`. Chromium and LibreOffice auto-start so the first conversion is not a cold launch.
+The first **Start Engine** downloads a Kata arm64 kernel, Apple's `vminit`, and `gotenberg/gotenberg:9.5.0` (Chromium, LibreOffice, and the litho PDF engine). Later starts reuse `~/Library/Application Support/thistle/`. Chromium and LibreOffice auto-start so the first conversion is not a cold launch.
 
 ![Built-in VM engine status, guest URL, and log](images/thistle2.png)
 
@@ -65,7 +65,7 @@ JSON routes show the result in the window. Binary routes keep the converted file
 
 ## Breaking changes in 1.0
 
-- Gotenberg 8 APIs are not supported. Built-in image is `gotenberg/gotenberg:9`.
+- Gotenberg 8 APIs are not supported. Built-in image is pinned to `gotenberg/gotenberg:9.5.0`.
 - PDF routes use `/forms/pdf/…` (not `/forms/pdfengines/…`).
 - Watermark is removed; use Stamp (always drawn over page content).
 - Metadata write uses the eight standard info fields, not arbitrary ExifTool tags.

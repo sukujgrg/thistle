@@ -48,6 +48,8 @@
     // watchdog, but a failed boot still has to cap engine.log.
     private var rotateTask: Task<Void, Never>?
     private var recoverCount = 0
+    private var healthFailureStreak = 0
+    private var activeSubmits = 0
     private var generationDigest: String?
     private var gotenbergVersion: String?
     private let client = GotenbergClient()
@@ -77,6 +79,7 @@
     func requestStart() {
       if engine != nil || startTask != nil || operationTask != nil { return }
       recoverCount = 0
+      healthFailureStreak = 0
       _ = beginStart(forcePull: false)
     }
 
@@ -130,6 +133,7 @@
         try? await current.stop()
       }
       try? FileManager.default.removeItem(at: Paths.runtimeState)
+      healthFailureStreak = 0
       if setIdle {
         phase = .idle
       }
@@ -143,6 +147,7 @@
       // Bypass requestStart's operationTask gate so restart can boot while
       // the serialized operation that invoked us is still marked in-flight.
       recoverCount = 0
+      healthFailureStreak = 0
       _ = try await beginStart(forcePull: false).value
     }
 
@@ -190,11 +195,16 @@
           issue + " Use Refresh Image to update the built-in engine.")
       }
       touchIdle()
+      activeSubmits += 1
+      defer { activeSubmits -= 1 }
       let trace = HTTPTrace()
       let result: GotenbergClient.Response
       do {
         result = try await client.submit(
           baseURL: running.baseURL, path: path, fields: fields, files: files, trace: trace)
+        // A finished convert is stronger liveness than /health.
+        recoverCount = 0
+        healthFailureStreak = 0
       } catch {
         flush(trace)
         log(EngineError.message(for: error))
@@ -251,7 +261,7 @@
           try? await started.stop()
           throw CancellationError()
         }
-        let version = try? await client.version(baseURL: started.baseURL)
+        let version = await probeVersion(baseURL: started.baseURL)
         guard !Task.isCancelled, bootToken == token else {
           try? await started.stop()
           throw CancellationError()
@@ -260,8 +270,13 @@
         engine = started
         generationDigest = started.imageDigest
         phase = .running
+        healthFailureStreak = 0
         log("Ready at \(started.baseURL.absoluteString)")
-        if let version { log("Gotenberg \(version)") }
+        if let version {
+          log("Gotenberg \(version)")
+        } else {
+          log("Gotenberg version unavailable")
+        }
         touchIdle()
         startWatchdog()
         return started
@@ -307,22 +322,61 @@
       }
     }
 
+    private func probeVersion(baseURL: URL) async -> String? {
+      var lastError: String?
+      for attempt in 1...EngineIdentity.versionProbeAttempts {
+        guard !Task.isCancelled else { return nil }
+        do {
+          if let version = try await client.version(baseURL: baseURL) {
+            return version
+          }
+          // 404 / empty — Gotenberg is up but does not expose /version.
+          return nil
+        } catch {
+          lastError = EngineError.message(for: error)
+          if attempt < EngineIdentity.versionProbeAttempts {
+            try? await Task.sleep(for: EngineIdentity.versionProbeBackoff)
+          }
+        }
+      }
+      if let lastError {
+        log("Version probe failed: \(lastError)")
+      }
+      return nil
+    }
+
     private func checkHealth() async {
-      guard let engine, startTask == nil, operationTask == nil, case .running = phase else { return }
+      guard let engine, startTask == nil, operationTask == nil, activeSubmits == 0,
+        case .running = phase
+      else { return }
       do {
         // Built-in health uses loopback only; Local Network denial does not apply.
+        // Probes use a dedicated HTTP session so converts cannot starve them.
         try await client.checkHealth(baseURL: engine.baseURL)
         recoverCount = 0
+        healthFailureStreak = 0
         return
       } catch {
-        // Health failures go through crash recovery (bridge/guest recycle).
+        healthFailureStreak += 1
+        log(
+          "Engine unhealthy (\(healthFailureStreak)/\(EngineIdentity.healthFailureThreshold)): \(EngineError.message(for: error))"
+        )
       }
-      log("Engine unhealthy")
+      // Re-check after the probe await — a convert may have started meanwhile.
+      guard activeSubmits == 0, startTask == nil, operationTask == nil, case .running = phase else {
+        return
+      }
+      guard healthFailureStreak >= EngineIdentity.healthFailureThreshold else { return }
       await recover()
     }
 
     private func recover() async {
+      guard activeSubmits == 0 else {
+        log("Skipping recovery; convert in progress")
+        return
+      }
       recoverCount += 1
+      healthFailureStreak = 0
       if recoverCount > EngineIdentity.recoverAttempts {
         await stop()
         phase = .failed("Engine crashed repeatedly. Start Engine to try again.")

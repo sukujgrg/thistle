@@ -25,4 +25,9 @@ struct GuestAPIBridgeContractTests {
     #expect(EngineIdentity.apiVsockPort < 0x1000_0000)
     #expect(EngineIdentity.apiVsockPort == UInt32(EngineIdentity.hostAPIPort))
   }
+
+  @Test func watchdogRequiresConsecutiveHealthFailuresBeforeRecover() {
+    #expect(EngineIdentity.healthFailureThreshold == 3)
+    #expect(EngineIdentity.versionProbeAttempts >= 3)
+  }
 }

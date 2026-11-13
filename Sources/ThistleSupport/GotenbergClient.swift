@@ -60,25 +60,36 @@ public actor GotenbergClient {
     "certificatePassword",
   ]
 
-  private let dataLoader: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+  /// Long-running conversions. Must never share a session with probes — a serial
+  /// convert upload would starve `/health` and trip false crash recovery.
+  private let jobLoader: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+  /// Liveness/version probes on an independent session.
+  private let probeLoader: @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
   public init() {
-    let config = URLSessionConfiguration.ephemeral
-    config.timeoutIntervalForRequest = 300
-    config.timeoutIntervalForResource = 600
-    config.urlCredentialStorage = nil
-    config.httpCookieStorage = nil
-    config.httpShouldSetCookies = false
-    let queue = OperationQueue()
-    queue.name = "gotenberg.http"
-    queue.maxConcurrentOperationCount = 1
-    let session = URLSession(
-      configuration: config, delegate: APIRedirectDelegate(), delegateQueue: queue)
-    dataLoader = { try await session.data(for: $0) }
+    jobLoader = Self.makeSessionLoader(
+      name: "gotenberg.http.job",
+      requestTimeout: 300,
+      resourceTimeout: 600
+    )
+    probeLoader = Self.makeSessionLoader(
+      name: "gotenberg.http.probe",
+      requestTimeout: 5,
+      resourceTimeout: 10
+    )
   }
 
   init(dataLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)) {
-    self.dataLoader = dataLoader
+    self.jobLoader = dataLoader
+    self.probeLoader = dataLoader
+  }
+
+  init(
+    jobLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse),
+    probeLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)
+  ) {
+    self.jobLoader = jobLoader
+    self.probeLoader = probeLoader
   }
 
   public func checkHealth(baseURL: URL, credentials: RemoteCredentials = RemoteCredentials())
@@ -86,7 +97,7 @@ public actor GotenbergClient {
   {
     var request = Self.healthRequest(baseURL: baseURL)
     request.setValue(try credentials.authorizationHeader(), forHTTPHeaderField: "Authorization")
-    let (data, response) = try await load(request)
+    let (data, response) = try await loadProbe(request)
     try Self.checkResponse(response, data: data, credentials: credentials)
   }
 
@@ -103,9 +114,9 @@ public actor GotenbergClient {
     async throws -> String?
   {
     var request = URLRequest(url: baseURL.appending(path: "version"))
-    request.timeoutInterval = 3
+    request.timeoutInterval = 5
     request.setValue(try credentials.authorizationHeader(), forHTTPHeaderField: "Authorization")
-    let (data, response) = try await load(request)
+    let (data, response) = try await loadProbe(request)
     if (response as? HTTPURLResponse)?.statusCode == 404 { return nil }
     try Self.checkResponse(response, data: data, credentials: credentials)
     guard data.count <= 256, let raw = String(data: data, encoding: .utf8) else { return nil }
@@ -182,7 +193,7 @@ public actor GotenbergClient {
     request.setValue(try credentials.authorizationHeader(), forHTTPHeaderField: "Authorization")
     request.httpBody = try Self.multipartBody(boundary: boundary, fields: fields, files: files)
 
-    let (data, response) = try await load(request)
+    let (data, response) = try await loadJob(request)
     guard let http = response as? HTTPURLResponse else {
       trace?.add("  -> no HTTP response")
       throw EngineError.convertFailed(status: -1, body: "no HTTP response")
@@ -232,12 +243,40 @@ public actor GotenbergClient {
     }
   }
 
-  private func load(_ request: URLRequest) async throws -> (Data, URLResponse) {
+  private func loadJob(_ request: URLRequest) async throws -> (Data, URLResponse) {
+    try await load(request, with: jobLoader)
+  }
+
+  private func loadProbe(_ request: URLRequest) async throws -> (Data, URLResponse) {
+    try await load(request, with: probeLoader)
+  }
+
+  private func load(
+    _ request: URLRequest,
+    with loader: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+  ) async throws -> (Data, URLResponse) {
     do {
-      return try await dataLoader(request)
+      return try await loader(request)
     } catch {
       throw NetworkFailure.normalized(error)
     }
+  }
+
+  private static func makeSessionLoader(
+    name: String, requestTimeout: TimeInterval, resourceTimeout: TimeInterval
+  ) -> @Sendable (URLRequest) async throws -> (Data, URLResponse) {
+    let config = URLSessionConfiguration.ephemeral
+    config.timeoutIntervalForRequest = requestTimeout
+    config.timeoutIntervalForResource = resourceTimeout
+    config.urlCredentialStorage = nil
+    config.httpCookieStorage = nil
+    config.httpShouldSetCookies = false
+    let queue = OperationQueue()
+    queue.name = name
+    queue.maxConcurrentOperationCount = 1
+    let session = URLSession(
+      configuration: config, delegate: APIRedirectDelegate(), delegateQueue: queue)
+    return { try await session.data(for: $0) }
   }
 
   static func multipartBody(
@@ -296,7 +335,8 @@ public actor GotenbergClient {
 
   private static func healthRequest(baseURL: URL) -> URLRequest {
     var request = URLRequest(url: baseURL.appending(path: "health"))
-    request.timeoutInterval = 2
+    // Match waitUntilHealthy's probe budget; 2s was too tight for loopback+vsock.
+    request.timeoutInterval = 5
     return request
   }
 
